@@ -10,6 +10,10 @@ from PySide6.QtCore import QTimer, Qt, Signal
 from PySide6.QtGui import QColor, QBrush
 from datetime import datetime
 from typing import Optional, Dict
+from gridtrader.ui.styles import (
+    TABLE_STYLE, STATUS_CONNECTED_STYLE, STATUS_DISCONNECTED_STYLE,
+    apply_table_style, SUCCESS_COLOR, ERROR_COLOR
+)
 
 from gridtrader.ui.dialogs.ibkr_connection_dialog import IBKRConnectionDialog, IBKRConnectionSettings
 from gridtrader.infrastructure.brokers.ibkr import set_shared_adapter, clear_shared_adapter
@@ -106,6 +110,7 @@ class EnhancedLiveDataWidget(QWidget):
         self.market_table.setHorizontalHeaderLabels([
             "Symbol", "Bid", "Ask", "Last", "Change", "Change %", "Volume", "High", "Low"
         ])
+        apply_table_style(self.market_table)
 
         header = self.market_table.horizontalHeader()
         header.setStretchLastSection(True)

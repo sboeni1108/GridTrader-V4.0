@@ -12,6 +12,12 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt, Signal, QThread
 from PySide6.QtGui import QFont, QColor
+from gridtrader.ui.styles import (
+    TITLE_STYLE, GROUPBOX_STYLE, TABLE_STYLE, TAB_STYLE, LOG_STYLE,
+    STATUSBAR_STYLE, PROGRESS_STYLE, PRIMARY_BUTTON_STYLE,
+    apply_table_style, apply_groupbox_style, apply_title_style, apply_log_style,
+    SUCCESS_COLOR, ERROR_COLOR
+)
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
@@ -703,48 +709,51 @@ class AdvancedBacktestWidget(QWidget):
     def init_ui(self):
         """UI initialisieren"""
         layout = QVBoxLayout()
-        
+
         # Header
         header = QLabel("Advanced Backtest - Multi-Szenario Analyse")
-        header.setStyleSheet("font-size: 18px; font-weight: bold; padding: 10px;")
+        apply_title_style(header)
         layout.addWidget(header)
-        
+
         # Tabs für verschiedene Bereiche
         tabs = QTabWidget()
-        
+        tabs.setStyleSheet(TAB_STYLE)
+
         # Tab 1: Daten & Setup
         setup_tab = self.create_setup_tab()
         tabs.addTab(setup_tab, "Setup")
-        
+
         # Tab 2: Szenarien
         scenarios_tab = self.create_scenarios_tab()
         tabs.addTab(scenarios_tab, "Szenarien")
-        
+
         # Tab 3: Ergebnisse
         results_tab = self.create_results_tab()
         tabs.addTab(results_tab, "Ergebnisse")
-        
+
         layout.addWidget(tabs)
-        
+
         # Status Bar
         self.status_label = QLabel("Bereit")
-        self.status_label.setStyleSheet("padding: 5px; background: #f0f0f0;")
+        self.status_label.setStyleSheet(STATUSBAR_STYLE)
         layout.addWidget(self.status_label)
-        
+
         # Progress Bar
         self.progress_bar = QProgressBar()
+        self.progress_bar.setStyleSheet(PROGRESS_STYLE)
         self.progress_bar.setVisible(False)
         layout.addWidget(self.progress_bar)
-        
+
         self.setLayout(layout)
         
     def create_setup_tab(self):
         """Setup Tab erstellen"""
         widget = QWidget()
         layout = QVBoxLayout()
-        
+
         # Daten-Abruf Sektion
         data_group = QGroupBox("Historische Daten")
+        apply_groupbox_style(data_group)
         data_layout = QGridLayout()
         
         data_layout.addWidget(QLabel("Symbol:"), 0, 0)
@@ -798,6 +807,7 @@ class AdvancedBacktestWidget(QWidget):
         
         # Basis-Einstellungen
         base_group = QGroupBox("Basis-Einstellungen")
+        apply_groupbox_style(base_group)
         base_layout = QGridLayout()
         
         base_layout.addWidget(QLabel("Initial-Kapital:"), 0, 0)
@@ -828,9 +838,10 @@ class AdvancedBacktestWidget(QWidget):
         """Szenarien Tab erstellen"""
         widget = QWidget()
         layout = QVBoxLayout()
-        
+
         # Szenario-Generator
         gen_group = QGroupBox("Szenario-Generator")
+        apply_groupbox_style(gen_group)
         gen_layout = QGridLayout()
         
         # Grid-Parameter Ranges - AKTUALISIERT mit feinerer Granularität
@@ -923,13 +934,15 @@ class AdvancedBacktestWidget(QWidget):
         
         # Szenarien-Liste
         list_group = QGroupBox("Generierte Szenarien")
+        apply_groupbox_style(list_group)
         list_layout = QVBoxLayout()
-        
+
         self.scenarios_table = QTableWidget()
         self.scenarios_table.setColumnCount(6)
         self.scenarios_table.setHorizontalHeaderLabels([
             "Name", "Typ", "Aktien/Level", "Step %", "Exit %", "Max Levels"
         ])
+        apply_table_style(self.scenarios_table)
         list_layout.addWidget(self.scenarios_table)
         
         self.scenario_count_label = QLabel("0 Szenarien")
@@ -945,18 +958,19 @@ class AdvancedBacktestWidget(QWidget):
         """Ergebnis Tab erstellen"""
         widget = QWidget()
         layout = QVBoxLayout()
-        
+
         # Control Buttons
         control_layout = QHBoxLayout()
-        
+
         self.run_btn = QPushButton("▶️ Backtest Starten")
+        self.run_btn.setStyleSheet(PRIMARY_BUTTON_STYLE)
         self.run_btn.clicked.connect(self.run_backtest)
         control_layout.addWidget(self.run_btn)
-        
+
         self.stop_btn = QPushButton("⏹️ Stoppen")
         self.stop_btn.setEnabled(False)
         control_layout.addWidget(self.stop_btn)
-        
+
         self.export_btn = QPushButton("📊 Excel Export")
         self.export_btn.clicked.connect(self.export_to_excel)
         control_layout.addWidget(self.export_btn)
@@ -968,7 +982,7 @@ class AdvancedBacktestWidget(QWidget):
 
         control_layout.addStretch()
         layout.addLayout(control_layout)
-        
+
         # Ergebnis-Tabelle mit 16 Spalten (inkl. Initial Capital)
         self.results_table = QTableWidget()
         self.results_table.setColumnCount(16)
@@ -977,6 +991,7 @@ class AdvancedBacktestWidget(QWidget):
             "Win Rate %", "Max DD %", "Trades (BUY+SELL)", "Rest Aktien",
             "Ø Kurs Rest", "Letzter Kurs", "Unrealized P&L $", "Net P&L $", "Kommission $"
         ])
+        apply_table_style(self.results_table)
         # Mehrfachauswahl aktivieren
         self.results_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.results_table.setSelectionMode(QTableWidget.SelectionMode.MultiSelection)
@@ -986,28 +1001,30 @@ class AdvancedBacktestWidget(QWidget):
         for i in range(16):
             header.setSectionResizeMode(i, QHeaderView.ResizeMode.ResizeToContents)
         layout.addWidget(self.results_table)
-        
+
         # Statistik-Bereich
         stats_group = QGroupBox("Statistiken")
+        apply_groupbox_style(stats_group)
         stats_layout = QGridLayout()
-        
+
         self.best_long_label = QLabel("Bestes LONG: -")
         stats_layout.addWidget(self.best_long_label, 0, 0)
-        
+
         self.best_short_label = QLabel("Bestes SHORT: -")
         stats_layout.addWidget(self.best_short_label, 0, 1)
-        
+
         self.avg_return_label = QLabel("Ø Return: -")
         stats_layout.addWidget(self.avg_return_label, 1, 0)
-        
+
         self.total_scenarios_label = QLabel("Getestet: 0")
         stats_layout.addWidget(self.total_scenarios_label, 1, 1)
-        
+
         stats_group.setLayout(stats_layout)
         layout.addWidget(stats_group)
-        
+
         # Log-Bereich
         self.log_text = QTextEdit()
+        apply_log_style(self.log_text)
         self.log_text.setMaximumHeight(150)
         self.log_text.setReadOnly(True)
         layout.addWidget(self.log_text)

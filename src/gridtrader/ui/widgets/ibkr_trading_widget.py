@@ -13,6 +13,11 @@ from PySide6.QtGui import QColor
 from datetime import datetime
 import asyncio
 from typing import Dict, Optional
+from gridtrader.ui.styles import (
+    TITLE_STYLE, GROUPBOX_STYLE, TABLE_STYLE, LOG_STYLE,
+    SUCCESS_BUTTON_STYLE, apply_table_style, apply_groupbox_style,
+    apply_title_style, apply_log_style, SUCCESS_COLOR, ERROR_COLOR
+)
 
 from gridtrader.infrastructure.brokers.ibkr.shared_connection import shared_connection
 from gridtrader.domain.models.order import Order, OrderSide, OrderType, OrderStatus
@@ -119,7 +124,7 @@ class IBKRTradingWidget(QWidget):
 
         # Title
         title = QLabel("📊 IBKR Live Trading")
-        title.setStyleSheet("font-size: 18px; font-weight: bold;")
+        apply_title_style(title)
         layout.addWidget(title)
 
         # Trading Mode Indicator
@@ -140,6 +145,7 @@ class IBKRTradingWidget(QWidget):
 
         # Order Entry
         entry_group = QGroupBox("Order Entry")
+        apply_groupbox_style(entry_group)
         entry_layout = QVBoxLayout()
 
         # Symbol and Quantity
@@ -183,7 +189,7 @@ class IBKRTradingWidget(QWidget):
 
         # Place Order Button
         self.place_btn = QPushButton("🚀 Place Order")
-        self.place_btn.setStyleSheet("background-color: green; color: white; font-weight: bold; padding: 10px;")
+        self.place_btn.setStyleSheet(SUCCESS_BUTTON_STYLE)
         self.place_btn.clicked.connect(self._on_place_order_clicked)
         entry_layout.addWidget(self.place_btn)
         print("DEBUG: Place Order button created and connected to _on_place_order_clicked()")
@@ -193,6 +199,7 @@ class IBKRTradingWidget(QWidget):
 
         # Pending Orders Table
         pending_group = QGroupBox("Pending Orders")
+        apply_groupbox_style(pending_group)
         pending_layout = QVBoxLayout()
 
         self.pending_table = QTableWidget()
@@ -200,6 +207,7 @@ class IBKRTradingWidget(QWidget):
         self.pending_table.setHorizontalHeaderLabels([
             "Order ID", "Symbol", "Side", "Qty", "Price", "Type", "Status", "Broker ID"
         ])
+        apply_table_style(self.pending_table)
         pending_layout.addWidget(self.pending_table)
 
         pending_group.setLayout(pending_layout)
@@ -207,8 +215,10 @@ class IBKRTradingWidget(QWidget):
 
         # Log
         log_group = QGroupBox("Log")
+        apply_groupbox_style(log_group)
         log_layout = QVBoxLayout()
         self.log_text = QTextEdit()
+        apply_log_style(self.log_text)
         self.log_text.setMaximumHeight(150)
         self.log_text.setReadOnly(True)
         log_layout.addWidget(self.log_text)

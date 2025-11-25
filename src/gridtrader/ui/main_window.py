@@ -12,6 +12,11 @@ from gridtrader.ui.widgets.advanced_backtest_widget import AdvancedBacktestWidge
 from gridtrader.ui.widgets.trading_bot_widget import TradingBotWidget
 from gridtrader.ui.widgets.ibkr_trading_widget import IBKRTradingWidget
 from gridtrader.infrastructure.brokers.ibkr.shared_connection import shared_connection
+from gridtrader.ui.styles import (
+    TITLE_STYLE, GROUPBOX_STYLE, TABLE_STYLE, TAB_STYLE, LIST_STYLE,
+    STATUSBAR_STYLE, apply_table_style, apply_groupbox_style, apply_list_style,
+    apply_title_style, SUCCESS_COLOR, ERROR_COLOR
+)
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -27,8 +32,9 @@ class MainWindow(QMainWindow):
         # Connection Warning Banner (hidden by default)
         self._create_connection_banner(layout)
 
-        # Tab Widget
+        # Tab Widget mit Styling
         self.tabs = QTabWidget()
+        self.tabs.setStyleSheet(TAB_STYLE)
         layout.addWidget(self.tabs)
         
         # Create all tabs
@@ -56,7 +62,7 @@ class MainWindow(QMainWindow):
         # Title and Status Bar
         header_layout = QHBoxLayout()
         title = QLabel("📊 GridTrader Dashboard")
-        title.setStyleSheet("font-size: 18px; font-weight: bold; padding: 10px;")
+        apply_title_style(title)
         header_layout.addWidget(title)
 
         # Status indicators
@@ -79,6 +85,7 @@ class MainWindow(QMainWindow):
         # 1. TOP PANEL: Stock Information
         # ============================================
         stock_group = QGroupBox("Aktien-Information (Symbole mit wartenden/aktiven Levels)")
+        apply_groupbox_style(stock_group)
         stock_layout = QVBoxLayout()
 
         self.dashboard_stock_table = QTableWidget()
@@ -86,6 +93,7 @@ class MainWindow(QMainWindow):
         self.dashboard_stock_table.setHorizontalHeaderLabels([
             "Symbol", "Bid", "Ask", "Last", "Change", "Change %", "Volume", "High", "Low"
         ])
+        apply_table_style(self.dashboard_stock_table)
         self.dashboard_stock_table.horizontalHeader().setStretchLastSection(True)
         self.dashboard_stock_table.setMaximumHeight(150)
         stock_layout.addWidget(self.dashboard_stock_table)
@@ -97,6 +105,7 @@ class MainWindow(QMainWindow):
         # 2. MIDDLE PANEL: Active Levels
         # ============================================
         levels_group = QGroupBox("Aktive Levels")
+        apply_groupbox_style(levels_group)
         levels_layout = QVBoxLayout()
 
         self.dashboard_levels_table = QTableWidget()
@@ -105,6 +114,7 @@ class MainWindow(QMainWindow):
             "Symbol", "Typ", "Anzahl", "Einstieg", "Ziel", "Akt. Preis",
             "P&L", "Diff. zum Ziel", "Dauer", "Szenario"
         ])
+        apply_table_style(self.dashboard_levels_table)
         self.dashboard_levels_table.horizontalHeader().setStretchLastSection(True)
         levels_layout.addWidget(self.dashboard_levels_table)
 
@@ -115,6 +125,7 @@ class MainWindow(QMainWindow):
         # 3. BOTTOM PANEL: Executed Trades
         # ============================================
         trades_group = QGroupBox("Ausgeführte Trades")
+        apply_groupbox_style(trades_group)
         trades_layout = QVBoxLayout()
 
         self.dashboard_trades_table = QTableWidget()
@@ -122,6 +133,7 @@ class MainWindow(QMainWindow):
         self.dashboard_trades_table.setHorizontalHeaderLabels([
             "Zeit", "Symbol", "Level", "Typ", "Seite", "Anzahl", "Preis", "Total", "Kommission"
         ])
+        apply_table_style(self.dashboard_trades_table)
         self.dashboard_trades_table.horizontalHeader().setStretchLastSection(True)
         self.dashboard_trades_table.setMaximumHeight(250)
         trades_layout.addWidget(self.dashboard_trades_table)
@@ -383,7 +395,7 @@ class MainWindow(QMainWindow):
 
         # Title
         title = QLabel("📋 Trading Logs & Reports")
-        title.setStyleSheet("font-size: 18px; font-weight: bold; padding: 10px;")
+        apply_title_style(title)
         layout.addWidget(title)
 
         # Action buttons
@@ -412,9 +424,11 @@ class MainWindow(QMainWindow):
         # TOP PANEL: Daily Logs
         # ============================================
         daily_group = QGroupBox("Tages-Logs")
+        apply_groupbox_style(daily_group)
         daily_layout = QVBoxLayout()
 
         self.daily_logs_list = QListWidget()
+        apply_list_style(self.daily_logs_list)
         self.daily_logs_list.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.daily_logs_list.setMinimumHeight(200)
         daily_layout.addWidget(self.daily_logs_list)
@@ -426,9 +440,11 @@ class MainWindow(QMainWindow):
         # BOTTOM PANEL: Yearly Logs
         # ============================================
         yearly_group = QGroupBox("Jahres-Logs")
+        apply_groupbox_style(yearly_group)
         yearly_layout = QVBoxLayout()
 
         self.yearly_logs_list = QListWidget()
+        apply_list_style(self.yearly_logs_list)
         self.yearly_logs_list.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.yearly_logs_list.setMinimumHeight(150)
         yearly_layout.addWidget(self.yearly_logs_list)

@@ -13,6 +13,11 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt, Signal, QTimer, QThread
 from PySide6.QtGui import QFont, QColor, QTextCursor
+from gridtrader.ui.styles import (
+    TITLE_STYLE, GROUPBOX_STYLE, TABLE_STYLE, TREE_STYLE, LOG_STYLE,
+    STATUSBAR_STYLE, apply_table_style, apply_groupbox_style, apply_tree_style,
+    apply_title_style, apply_log_style, SUCCESS_COLOR, ERROR_COLOR
+)
 from datetime import datetime, date, time
 from typing import Dict, List, Optional
 from pathlib import Path
@@ -1207,7 +1212,7 @@ class TradingBotWidget(QWidget):
 
         # Header
         header = QLabel("Trading-Bot - Szenario Management")
-        header.setStyleSheet("font-size: 18px; font-weight: bold; padding: 10px;")
+        apply_title_style(header)
         layout.addWidget(header)
 
         # === OBEN: Daily Statistics Panel ===
@@ -1237,7 +1242,7 @@ class TradingBotWidget(QWidget):
 
         # Status Bar
         self.status_label = QLabel("Bereit - Keine Szenarien geladen")
-        self.status_label.setStyleSheet("padding: 5px; background: #f0f0f0;")
+        self.status_label.setStyleSheet(STATUSBAR_STYLE)
         layout.addWidget(self.status_label)
 
         self.setLayout(layout)
@@ -1249,6 +1254,7 @@ class TradingBotWidget(QWidget):
 
         # GroupBox für Szenarien
         group = QGroupBox("Verfügbare Szenarien")
+        apply_groupbox_style(group)
         group_layout = QVBoxLayout()
 
         # TreeWidget für hierarchische Darstellung
@@ -1256,6 +1262,7 @@ class TradingBotWidget(QWidget):
         self.scenarios_tree.setHeaderLabels([
             "Name / Level", "Typ", "Symbol", "Aktien", "Einstieg %", "Ausstieg %"
         ])
+        apply_tree_style(self.scenarios_tree)
 
         # Mehrfachauswahl aktivieren (Ctrl+Klick für einzelne, Shift+Klick für Bereiche)
         self.scenarios_tree.setSelectionMode(QTreeWidget.SelectionMode.ExtendedSelection)
@@ -1324,6 +1331,7 @@ class TradingBotWidget(QWidget):
 
         # === OBEN: Aktive Levels ===
         active_group = QGroupBox("Aktive Levels (Offene Positionen)")
+        apply_groupbox_style(active_group)
         active_layout = QVBoxLayout()
 
         self.active_table = QTableWidget()
@@ -1332,6 +1340,7 @@ class TradingBotWidget(QWidget):
             "Symbol", "Typ", "Einstiegspreis", "Zielpreis", "Akt. Preis",
             "Akt. P&L", "Diff. zum Ziel", "Dauer", "Status", "Szenario"
         ])
+        apply_table_style(self.active_table)
         self.active_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.active_table.setSelectionMode(QTableWidget.SelectionMode.ExtendedSelection)
 
@@ -1365,6 +1374,7 @@ class TradingBotWidget(QWidget):
 
         # === MITTE: Pending Orders (Platziert, warten auf Ausführung) ===
         pending_group = QGroupBox("Pending Orders (Platziert, warten auf Ausführung)")
+        apply_groupbox_style(pending_group)
         pending_layout = QVBoxLayout()
 
         self.pending_table = QTableWidget()
@@ -1372,6 +1382,7 @@ class TradingBotWidget(QWidget):
         self.pending_table.setHorizontalHeaderLabels([
             "Symbol", "Typ", "Aktion", "Shares", "Preis", "Order ID", "Status", "Zeit", "Level"
         ])
+        apply_table_style(self.pending_table)
         self.pending_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.pending_table.setSelectionMode(QTableWidget.SelectionMode.ExtendedSelection)
 
@@ -1391,6 +1402,7 @@ class TradingBotWidget(QWidget):
 
         # === UNTEN: Wartende Levels ===
         waiting_group = QGroupBox("Wartende Levels (Warten auf Einstieg)")
+        apply_groupbox_style(waiting_group)
         waiting_layout = QVBoxLayout()
 
         self.waiting_table = QTableWidget()
@@ -1399,6 +1411,7 @@ class TradingBotWidget(QWidget):
             "Symbol", "Typ", "Zielpreis (Einstieg)", "Ausstiegspreis", "Akt. Preis",
             "Diff. zum Einstieg", "Status", "Szenario"
         ])
+        apply_table_style(self.waiting_table)
         self.waiting_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.waiting_table.setSelectionMode(QTableWidget.SelectionMode.ExtendedSelection)
 
@@ -1440,6 +1453,7 @@ class TradingBotWidget(QWidget):
     def create_statistics_panel(self):
         """Oberes Panel: Daily Statistics - KOMPAKT"""
         group = QGroupBox("Tagesstatistik")
+        apply_groupbox_style(group)
         group.setMaximumHeight(180)  # Begrenzte Höhe!
 
         # Grid Layout für kompakte 2-spaltige Darstellung
@@ -1625,6 +1639,7 @@ class TradingBotWidget(QWidget):
     def create_log_terminal(self):
         """Rechtes Panel: Log Terminal"""
         group = QGroupBox("Log Terminal")
+        apply_groupbox_style(group)
         layout = QVBoxLayout()
 
         # Log Text Area
