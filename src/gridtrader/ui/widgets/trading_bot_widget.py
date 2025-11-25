@@ -803,6 +803,14 @@ class TradingBotWidget(QWidget):
 
             self.update_pending_display()
 
+            # Prüfe ob es einen gespeicherten Fill für diese Order gibt (Race Condition Fix)
+            if hasattr(self, '_pending_fills') and broker_order_id in self._pending_fills:
+                fill_info = self._pending_fills.pop(broker_order_id)
+                print(f">>> Verarbeite gespeicherten Fill für {broker_order_id}")
+                self.log_message(f"Verarbeite zwischengespeicherten Fill für {broker_order_id}", "INFO")
+                # Rekursiv _on_order_filled aufrufen - jetzt ist die Order in pending_orders
+                self._on_order_filled(broker_order_id, fill_info)
+
     def _on_order_status_changed(self, broker_id: str, status: str, details: dict):
         """Callback für Order Status Updates"""
         if broker_id in self.pending_orders:
@@ -850,7 +858,12 @@ class TradingBotWidget(QWidget):
         print(f">>> broker_id in pending_orders: {broker_id in self.pending_orders}")
 
         if broker_id not in self.pending_orders:
-            print(f">>> WARNUNG: broker_id {broker_id} NICHT in pending_orders - Fill wird ignoriert!")
+            # Fill kam bevor order_placed verarbeitet wurde - speichere für später
+            print(f">>> WARNUNG: broker_id {broker_id} noch nicht in pending_orders - speichere Fill")
+            if not hasattr(self, '_pending_fills'):
+                self._pending_fills = {}
+            self._pending_fills[broker_id] = fill_info
+            self.log_message(f"Fill für {broker_id} zwischengespeichert (Order noch nicht registriert)", "WARNING")
             return
 
         order_info = self.pending_orders[broker_id]
