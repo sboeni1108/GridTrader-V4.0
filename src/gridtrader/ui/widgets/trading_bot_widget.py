@@ -682,13 +682,18 @@ class TradingBotWidget(QWidget):
             self._orders_placed_for_levels.add(unique_level_id)
 
             # Domain Order erstellen
+            # WICHTIG: Order-Typ basierend auf UI-Auswahl (RadioButton)
+            use_limit_order = self.limit_order_rb.isChecked() if hasattr(self, 'limit_order_rb') else True
+
             order = Order(
                 symbol=level['symbol'],
                 side=OrderSide.BUY if level['type'] == 'LONG' else OrderSide.SELL,
-                order_type=OrderType.LIMIT,
+                order_type=OrderType.LIMIT if use_limit_order else OrderType.MARKET,
                 quantity=level.get('shares', 100)
             )
-            order.limit_price = Decimal(str(level['entry_price']))
+
+            if use_limit_order:
+                order.limit_price = Decimal(str(level['entry_price']))
 
             # Order via Service platzieren (non-blocking!)
             callback_id = self._ibkr_service.place_order(order)
@@ -777,6 +782,16 @@ class TradingBotWidget(QWidget):
                 'callback_id': callback_id
             }
 
+            # ENTRY Order: Level aus Warten entfernen (wird jetzt in Pending angezeigt)
+            if order_info['type'] == 'ENTRY':
+                if level in self.waiting_levels:
+                    self.waiting_levels.remove(level)
+                    self.update_waiting_levels_display()
+                    self.log_message(
+                        f"Level {level.get('scenario_name', 'N/A')} L{level.get('level_num', 0)} -> Pending",
+                        "INFO"
+                    )
+
             self.update_pending_display()
 
     def _on_order_status_changed(self, broker_id: str, status: str, details: dict):
@@ -786,6 +801,30 @@ class TradingBotWidget(QWidget):
             self.update_pending_display()
 
             self.log_message(f"Order {broker_id}: {status}", "INFO")
+
+            # Bei Cancelled: Level-Tracking entfernen damit Order neu platziert werden kann
+            if status == 'Cancelled':
+                order_info = self.pending_orders[broker_id]
+                callback_id = order_info.get('callback_id')
+
+                if callback_id and callback_id in self._order_callbacks:
+                    cb_info = self._order_callbacks[callback_id]
+                    unique_level_id = cb_info.get('unique_level_id')
+
+                    # Level-Schutz entfernen -> Level kann wieder getriggert werden
+                    if unique_level_id:
+                        self._orders_placed_for_levels.discard(unique_level_id)
+                        self.log_message(
+                            f"Order {broker_id} cancelled - Level {unique_level_id} kann neu getriggert werden",
+                            "WARNING"
+                        )
+
+                    # Cleanup
+                    del self._order_callbacks[callback_id]
+
+                # Aus pending_orders entfernen
+                del self.pending_orders[broker_id]
+                self.update_pending_display()
 
     def _on_order_filled(self, broker_id: str, fill_info: dict):
         """Callback wenn Order gefüllt wurde"""
