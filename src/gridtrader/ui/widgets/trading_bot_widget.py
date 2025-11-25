@@ -534,6 +534,9 @@ class TradingBotWidget(QWidget):
         # Waiting Table aktualisieren
         self._update_waiting_table_prices(symbol)
 
+        # Active Table aktualisieren (Preise, P&L, Diff)
+        self._update_active_table_prices(symbol, data)
+
         # Entry/Exit Conditions prüfen (synchron - kein async nötig!)
         self._check_entry_conditions_sync(data)
         self._check_exit_conditions_sync(data)
@@ -2131,6 +2134,94 @@ class TradingBotWidget(QWidget):
         except Exception as e:
             self.log_message(f"Fehler beim Aktualisieren der Waiting Table: {e}", "ERROR")
             print(f"ERROR _update_waiting_table_prices: {e}")
+            import traceback
+            traceback.print_exc()
+
+    def _update_active_table_prices(self, symbol: str, market_data: dict):
+        """
+        Aktualisiere die Active Table mit aktuellen Marktdaten, P&L und Diff zum Ziel
+
+        Args:
+            symbol: Das Symbol das aktualisiert wurde
+            market_data: Dict mit bid, ask, last Preisen
+        """
+        try:
+            for row in range(self.active_table.rowCount()):
+                if row >= len(self.active_levels):
+                    continue
+
+                level = self.active_levels[row]
+
+                # Filter nach Symbol
+                if level.get('symbol') != symbol:
+                    continue
+
+                level_type = level.get('type', 'LONG')
+                entry_price = level.get('entry_fill_price') or level.get('entry_price', 0)
+                exit_price = level.get('exit_price', 0)
+                shares = level.get('shares', 100)
+
+                # Bestimme korrekten Preis für P&L Berechnung
+                # LONG: BID (was wir beim Verkauf bekommen würden)
+                # SHORT: ASK (was wir beim Rückkauf zahlen würden)
+                if level_type == 'LONG':
+                    current_price = market_data.get('bid', 0) or market_data.get('last', 0)
+                else:  # SHORT
+                    current_price = market_data.get('ask', 0) or market_data.get('last', 0)
+
+                if current_price <= 0:
+                    continue
+
+                # P&L berechnen
+                if level_type == 'LONG':
+                    pnl = (current_price - entry_price) * shares
+                    diff_to_target = ((exit_price - current_price) / current_price) * 100 if current_price > 0 else 0
+                else:  # SHORT
+                    pnl = (entry_price - current_price) * shares
+                    diff_to_target = ((current_price - exit_price) / current_price) * 100 if current_price > 0 else 0
+
+                # Update Aktueller Preis (Spalte 4)
+                price_item = self.active_table.item(row, 4)
+                if price_item:
+                    price_item.setText(f"${current_price:.2f}")
+
+                # Update P&L (Spalte 5)
+                pnl_item = self.active_table.item(row, 5)
+                if pnl_item:
+                    pnl_text = f"${pnl:+,.2f}"
+                    pnl_item.setText(pnl_text)
+                    if pnl >= 0:
+                        pnl_item.setForeground(QColor(0, 128, 0))
+                    else:
+                        pnl_item.setForeground(QColor(200, 0, 0))
+
+                # Update Diff zum Ziel (Spalte 6)
+                diff_item = self.active_table.item(row, 6)
+                if diff_item:
+                    diff_item.setText(f"{diff_to_target:+.2f}%")
+
+                # Update Dauer (Spalte 7)
+                entry_time_str = level.get('entry_time', '')
+                if entry_time_str:
+                    try:
+                        entry_time = datetime.fromisoformat(entry_time_str)
+                        duration = datetime.now() - entry_time
+                        minutes = int(duration.total_seconds() / 60)
+                        if minutes < 60:
+                            duration_text = f"{minutes}m"
+                        else:
+                            hours = minutes // 60
+                            mins = minutes % 60
+                            duration_text = f"{hours}h {mins}m"
+
+                        duration_item = self.active_table.item(row, 7)
+                        if duration_item:
+                            duration_item.setText(duration_text)
+                    except:
+                        pass
+
+        except Exception as e:
+            print(f"ERROR _update_active_table_prices: {e}")
             import traceback
             traceback.print_exc()
 
