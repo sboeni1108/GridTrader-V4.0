@@ -205,6 +205,9 @@ class TradingBotWidget(QWidget):
         # Trade history für persistente Logs
         self.trade_history = []
 
+        # Guard gegen doppeltes Trade-Logging (Trade-ID = "symbol_timestamp_shares")
+        self._logged_trades: set = set()
+
         # IBKR Connection (verwendet Shared Connection vom Live Trading Tab)
         self.live_trading_enabled = False
         self.market_data_timer: Optional[QTimer] = None
@@ -965,26 +968,35 @@ class TradingBotWidget(QWidget):
         if level in self.active_levels:
             self.active_levels.remove(level)
 
-        # Trade loggen
-        trade_data = {
-            'timestamp': datetime.now().isoformat(),
-            'symbol': level['symbol'],
-            'type': level['type'],
-            'shares': shares,
-            'entry_price': entry_price,
-            'exit_price': fill_price,
-            'pnl': pnl,
-            'commission': commission + level.get('entry_commission', 0),
-            'scenario': level.get('scenario_name', 'N/A'),
-            'level': level.get('level_num', 0)
-        }
+        # Trade-ID für Duplikat-Schutz
+        trade_id = f"{level['symbol']}_{level.get('scenario_name', 'N/A')}_L{level.get('level_num', 0)}_{fill_price:.2f}"
 
-        # JSON Logs schreiben
-        self._write_trade_to_logs(trade_data)
+        # Guard: Prüfe ob Trade bereits geloggt wurde
+        if trade_id in self._logged_trades:
+            print(f"DEBUG: Trade bereits geloggt, überspringe: {trade_id}")
+        else:
+            self._logged_trades.add(trade_id)
 
-        # Excel Trading Log schreiben
-        if hasattr(self, 'trading_log_exporter'):
-            self.trading_log_exporter.add_trade(trade_data)
+            # Trade loggen
+            trade_data = {
+                'timestamp': datetime.now().isoformat(),
+                'symbol': level['symbol'],
+                'type': level['type'],
+                'shares': shares,
+                'entry_price': entry_price,
+                'exit_price': fill_price,
+                'pnl': pnl,
+                'commission': commission + level.get('entry_commission', 0),
+                'scenario': level.get('scenario_name', 'N/A'),
+                'level': level.get('level_num', 0)
+            }
+
+            # JSON Logs schreiben
+            self._write_trade_to_logs(trade_data)
+
+            # Excel Trading Log schreiben
+            if hasattr(self, 'trading_log_exporter'):
+                self.trading_log_exporter.add_trade(trade_data)
 
         # Daily Stats
         self.daily_stats['realized_pnl'] += pnl
@@ -1009,7 +1021,7 @@ class TradingBotWidget(QWidget):
         # UI aktualisieren
         self.update_active_levels_display()
         self.update_waiting_levels_display()
-        self._update_daily_stats_display()
+        self.update_statistics_display()
 
     def _on_order_error(self, callback_id: str, error_msg: str):
         """Callback für Order Fehler"""
@@ -1585,6 +1597,8 @@ class TradingBotWidget(QWidget):
                 'total_volume': 0.0,
                 'total_shares': 0
             }
+            # Trade-Logging Guard auch zurücksetzen
+            self._logged_trades.clear()
             self.update_statistics_display()
             self.log_message("Tagesstatistik zurückgesetzt", "INFO")
 
@@ -1692,6 +1706,20 @@ class TradingBotWidget(QWidget):
         shares = trade_data.get('shares', 0)
         price = trade_data.get('price', 0.0)
         commission = trade_data.get('commission', 0.0)
+        symbol = trade_data.get('symbol', 'N/A')
+        trade_type = trade_data.get('type', 'N/A')
+        scenario = trade_data.get('scenario', 'N/A')
+        level = trade_data.get('level', 0)
+
+        # Trade-ID für Duplikat-Schutz (konsistent mit _handle_exit_fill)
+        trade_id = f"{symbol}_{scenario}_L{level}_{price:.2f}"
+
+        # Guard: Prüfe ob Trade bereits geloggt wurde
+        if trade_id in self._logged_trades:
+            print(f"DEBUG record_trade: Trade bereits geloggt, überspringe: {trade_id}")
+            return
+
+        self._logged_trades.add(trade_id)
 
         # Update Stats
         self.daily_stats['total_trades'] += 1
@@ -1707,8 +1735,6 @@ class TradingBotWidget(QWidget):
             self.daily_stats['losing_trades'] += 1
 
         # Log
-        symbol = trade_data.get('symbol', 'N/A')
-        trade_type = trade_data.get('type', 'N/A')
         self.log_message(
             f"TRADE: {symbol} {trade_type} {shares}x @ ${price:.2f} | P&L: ${pnl:.2f} | Komm: ${commission:.2f}",
             "TRADE"
@@ -1724,8 +1750,8 @@ class TradingBotWidget(QWidget):
             'exit_price': price,
             'pnl': pnl,
             'commission': commission,
-            'scenario': trade_data.get('scenario', 'N/A'),
-            'level': trade_data.get('level', 0)
+            'scenario': scenario,
+            'level': level
         }
         self._write_trade_to_logs(log_entry)
 
