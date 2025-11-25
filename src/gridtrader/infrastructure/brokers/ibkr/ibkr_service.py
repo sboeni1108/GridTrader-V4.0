@@ -647,7 +647,16 @@ class IBKRService:
             # Order platzieren
             print(f">>> Rufe ib.placeOrder() auf...")
             trade = self._ib.placeOrder(contract, ib_order)
-            print(f">>> placeOrder() zurückgekehrt, orderId={trade.order.orderId}")
+            broker_id = str(trade.order.orderId)
+            print(f">>> placeOrder() zurückgekehrt, orderId={broker_id}")
+
+            # WICHTIG: Tracking und order_placed SOFORT emittieren,
+            # BEVOR auf Status gewartet wird! Sonst wird ein schneller Fill
+            # verpasst, weil _on_order_status vor order_placed aufgerufen wird.
+            self._order_callbacks[broker_id] = callback_id
+            self._pending_orders[callback_id] = order
+            self.signals.order_placed.emit(callback_id, broker_id)
+            print(f">>> order_placed Signal emittiert für {broker_id}")
 
             # Warte auf initiale Bestätigung (max 2 Sekunden)
             # WICHTIG: await asyncio.sleep() statt ib.sleep() verwenden!
@@ -659,17 +668,8 @@ class IBKRService:
                     print(f">>> Status nach {i*0.1:.1f}s: {status}")
                     break
 
-            broker_id = str(trade.order.orderId)
             status = trade.orderStatus.status
-
-            print(f">>> Order platziert: ID={broker_id}, Status={status}")
-
-            # Tracking
-            self._order_callbacks[broker_id] = callback_id
-            self._pending_orders[callback_id] = order
-
-            # Signals an Qt Thread
-            self.signals.order_placed.emit(callback_id, broker_id)
+            print(f">>> Order Status: ID={broker_id}, Status={status}")
 
             details = {
                 'filled': trade.orderStatus.filled,
