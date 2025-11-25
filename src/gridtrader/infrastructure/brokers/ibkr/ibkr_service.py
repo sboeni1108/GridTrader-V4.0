@@ -267,17 +267,19 @@ class IBKRService:
         """
         Hintergrund-Task der IB Events verarbeitet
 
-        Ruft periodisch ib.sleep() auf um IB Callbacks zu triggern.
-        Läuft als asyncio Task im Event Loop.
+        WICHTIG: Muss regelmäßig yielden damit call_soon_threadsafe() Callbacks
+        ausgeführt werden können!
         """
         while self._running:
             try:
                 if self._ib and self._connected and self._ib.isConnected():
-                    # IB Events verarbeiten - Callbacks werden hier getriggert
-                    self._ib.sleep(0.01)
-                else:
-                    # Nicht verbunden - länger warten
-                    await asyncio.sleep(0.1)
+                    # IB Events verarbeiten - nur pending Events, nicht blockieren!
+                    self._ib.sleep(0)  # 0 = nur pending Events verarbeiten
+
+                # KRITISCH: Yield zum Event Loop damit Callbacks laufen können!
+                # Ohne dieses await werden call_soon_threadsafe() Callbacks nie ausgeführt
+                await asyncio.sleep(0.01)
+
             except asyncio.CancelledError:
                 break
             except Exception as e:
@@ -549,16 +551,24 @@ class IBKRService:
         import uuid
         callback_id = str(uuid.uuid4())
 
+        print(f">>> place_order() aufgerufen: {order.side.value} {order.quantity}x {order.symbol}")
+        print(f">>> callback_id: {callback_id[:8]}...")
+        print(f">>> Loop running: {self._loop is not None and self._loop.is_running()}")
+        print(f">>> Connected: {self._connected}")
+
         if not self._loop or not self._loop.is_running():
+            print(">>> ERROR: Event Loop nicht bereit!")
             self.signals.order_error.emit(callback_id, "Event Loop nicht bereit")
             return callback_id
 
+        print(">>> Scheduling _do_place_order via call_soon_threadsafe...")
         self._loop.call_soon_threadsafe(
             lambda: asyncio.ensure_future(
                 self._do_place_order(order, callback_id),
                 loop=self._loop
             )
         )
+        print(">>> call_soon_threadsafe() returned")
 
         return callback_id
 
@@ -569,27 +579,41 @@ class IBKRService:
         WICHTIG: Da wir im IB Thread sind, blockiert ib.placeOrder()
         und ib.sleep() NICHT den Qt Thread!
         """
+        print(f">>> _do_place_order GESTARTET für {callback_id[:8]}...")
+
         if not order:
+            print(">>> ERROR: Keine Order übergeben")
             self.signals.order_error.emit(callback_id, "Keine Order übergeben")
             return
 
         if not self._connected or not self._ib:
+            print(f">>> ERROR: Nicht verbunden (connected={self._connected}, ib={self._ib is not None})")
             self.signals.order_error.emit(callback_id, "Nicht mit IB verbunden")
             return
 
+        # Zusätzliche Verbindungsprüfung
+        if not self._ib.isConnected():
+            print(">>> ERROR: IB.isConnected() = False")
+            self.signals.order_error.emit(callback_id, "IB Verbindung verloren")
+            return
+
         try:
-            print(f"Platziere Order: {order.side.value} {order.quantity}x {order.symbol}")
+            print(f">>> Order: {order.side.value} {order.quantity}x {order.symbol}")
 
             # Contract
             if order.symbol in self._contracts:
                 contract = self._contracts[order.symbol]
+                print(f">>> Contract aus Cache: {contract.symbol} (conId={contract.conId})")
             else:
+                print(f">>> Qualifiziere Contract für {order.symbol}...")
                 contract = Stock(order.symbol, 'SMART', 'USD')
                 qualified = await self._ib.qualifyContractsAsync(contract)
                 if qualified:
                     contract = qualified[0]
                     self._contracts[order.symbol] = contract
+                    print(f">>> Contract qualifiziert: {contract.symbol} (conId={contract.conId})")
                 else:
+                    print(f">>> ERROR: Contract für {order.symbol} nicht gefunden")
                     self.signals.order_error.emit(
                         callback_id,
                         f"Contract für {order.symbol} nicht gefunden"
@@ -603,33 +627,38 @@ class IBKRService:
                     totalQuantity=order.quantity,
                     lmtPrice=float(order.limit_price)
                 )
-                print(f"  Limit Order @ ${order.limit_price}")
+                print(f">>> Limit Order: {ib_order.action} {ib_order.totalQuantity}x @ ${ib_order.lmtPrice}")
             else:
                 ib_order = MarketOrder(
                     action='BUY' if order.side == OrderSide.BUY else 'SELL',
                     totalQuantity=order.quantity
                 )
-                print(f"  Market Order")
+                print(f">>> Market Order: {ib_order.action} {ib_order.totalQuantity}x")
 
             ib_order.transmit = True
             ib_order.tif = 'DAY'
             if self._config and self._config.account:
                 ib_order.account = self._config.account
+                print(f">>> Account: {self._config.account}")
 
-            # Order platzieren - SYNCHRON im IB Thread
-            # Das blockiert NICHT Qt weil wir im separaten Thread sind!
+            # Order platzieren
+            print(f">>> Rufe ib.placeOrder() auf...")
             trade = self._ib.placeOrder(contract, ib_order)
+            print(f">>> placeOrder() zurückgekehrt, orderId={trade.order.orderId}")
 
             # Warte auf initiale Bestätigung (max 2 Sekunden)
-            for _ in range(20):
+            print(">>> Warte auf Order-Bestätigung...")
+            for i in range(20):
                 self._ib.sleep(0.1)
-                if trade.orderStatus.status not in ['PendingSubmit', '']:
+                status = trade.orderStatus.status
+                if status not in ['PendingSubmit', '']:
+                    print(f">>> Status nach {i*0.1:.1f}s: {status}")
                     break
 
             broker_id = str(trade.order.orderId)
             status = trade.orderStatus.status
 
-            print(f"Order platziert: ID={broker_id}, Status={status}")
+            print(f">>> Order platziert: ID={broker_id}, Status={status}")
 
             # Tracking
             self._order_callbacks[broker_id] = callback_id
