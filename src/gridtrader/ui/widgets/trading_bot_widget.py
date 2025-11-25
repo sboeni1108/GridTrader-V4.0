@@ -697,6 +697,7 @@ class TradingBotWidget(QWidget):
 
             # Order via Service platzieren (non-blocking!)
             callback_id = self._ibkr_service.place_order(order)
+            print(f">>> _place_entry_order: callback_id={callback_id[:8]}... erstellt")
 
             # Tracking
             self._order_callbacks[callback_id] = {
@@ -705,6 +706,7 @@ class TradingBotWidget(QWidget):
                 'order': order,
                 'unique_level_id': unique_level_id
             }
+            print(f">>> _place_entry_order: callback zu _order_callbacks hinzugefügt, jetzt {len(self._order_callbacks)} Einträge")
 
             self.log_message(
                 f"ENTRY ORDER: {level['type']} {level.get('shares', 100)}x {level['symbol']} @ ${level['entry_price']:.2f}",
@@ -758,6 +760,10 @@ class TradingBotWidget(QWidget):
 
     def _on_order_placed(self, callback_id: str, broker_order_id: str):
         """Callback wenn Order bei IB platziert wurde"""
+        print(f">>> _on_order_placed: callback_id={callback_id[:8]}..., broker_id={broker_order_id}")
+        print(f">>> _order_callbacks hat {len(self._order_callbacks)} Einträge")
+        print(f">>> callback_id in _order_callbacks: {callback_id in self._order_callbacks}")
+
         if callback_id in self._order_callbacks:
             order_info = self._order_callbacks[callback_id]
             order_info['broker_order_id'] = broker_order_id
@@ -836,7 +842,12 @@ class TradingBotWidget(QWidget):
 
     def _on_order_filled(self, broker_id: str, fill_info: dict):
         """Callback wenn Order gefüllt wurde"""
+        print(f">>> _on_order_filled: broker_id={broker_id}")
+        print(f">>> pending_orders hat {len(self.pending_orders)} Einträge: {list(self.pending_orders.keys())}")
+        print(f">>> broker_id in pending_orders: {broker_id in self.pending_orders}")
+
         if broker_id not in self.pending_orders:
+            print(f">>> WARNUNG: broker_id {broker_id} NICHT in pending_orders - Fill wird ignoriert!")
             return
 
         order_info = self.pending_orders[broker_id]
@@ -867,6 +878,10 @@ class TradingBotWidget(QWidget):
 
     def _handle_entry_fill(self, level: dict, fill_price: float, commission: float):
         """Verarbeite gefüllten Entry"""
+        print(f">>> _handle_entry_fill: {level.get('scenario_name')}_L{level.get('level_num')}")
+        print(f">>> waiting_levels hat {len(self.waiting_levels)} Einträge")
+        print(f">>> active_levels hat {len(self.active_levels)} Einträge")
+
         self.log_message(
             f"ENTRY FILLED: {level['symbol']} @ ${fill_price:.2f} (Comm: ${commission:.2f})",
             "SUCCESS"
@@ -881,7 +896,11 @@ class TradingBotWidget(QWidget):
         # Aus waiting entfernen und zu active hinzufügen
         if level in self.waiting_levels:
             self.waiting_levels.remove(level)
+            print(f">>> Level aus waiting_levels entfernt")
+        else:
+            print(f">>> Level war NICHT in waiting_levels!")
         self.active_levels.append(level)
+        print(f">>> Level zu active_levels hinzugefügt, jetzt {len(self.active_levels)} aktive")
 
         # Level-Schutz entfernen
         scenario_name = level.get('scenario_name', 'unknown')
