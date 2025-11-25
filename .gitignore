@@ -1,0 +1,38 @@
+
+**.gitignore Inhalt:**
+```
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.sublime-*
+
+# Data & Logs
+*.pkl
+*.csv
+*.log
+*.xlsx
+*.json
+
+# Temp files
+*.tmp
+*.bak
+*.backup
+*.old
+*.broken
+fix_*.py
+korrektur*.py
+test_*.py
+
+# OS
+Thumbs.db
+.DS_Store
