@@ -541,6 +541,9 @@ class TradingBotWidget(QWidget):
         self._check_entry_conditions_sync(data)
         self._check_exit_conditions_sync(data)
 
+        # Dashboard aktualisieren (verwendet gesamten Cache)
+        self._update_dashboard(self._last_market_prices)
+
     def _check_entry_conditions_sync(self, market_data: dict):
         """
         Prüfe Entry-Bedingungen synchron (von Market Data Update aufgerufen)
