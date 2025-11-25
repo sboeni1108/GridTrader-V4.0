@@ -760,6 +760,7 @@ class TradingBotWidget(QWidget):
 
             # Order via Service platzieren
             callback_id = self._ibkr_service.place_order(order)
+            print(f">>> _place_exit_order: callback_id={callback_id[:8]}... erstellt")
 
             # Tracking
             self._order_callbacks[callback_id] = {
@@ -767,6 +768,8 @@ class TradingBotWidget(QWidget):
                 'type': 'EXIT',
                 'order': order
             }
+            print(f">>> _place_exit_order: callback zu _order_callbacks hinzugefügt, jetzt {len(self._order_callbacks)} Einträge")
+            print(f">>> _order_callbacks keys: {[k[:8] for k in self._order_callbacks.keys()]}")
 
             self.log_message(
                 f"EXIT ORDER: {level.get('shares', 100)}x {level['symbol']} @ ${level['exit_price']:.2f}",
@@ -782,49 +785,53 @@ class TradingBotWidget(QWidget):
         print(f">>> _order_callbacks hat {len(self._order_callbacks)} Einträge")
         print(f">>> callback_id in _order_callbacks: {callback_id in self._order_callbacks}")
 
-        if callback_id in self._order_callbacks:
-            order_info = self._order_callbacks[callback_id]
-            order_info['broker_order_id'] = broker_order_id
+        if callback_id not in self._order_callbacks:
+            print(f">>> WARNUNG: callback_id {callback_id[:8]}... nicht in _order_callbacks!")
+            self.log_message(f"Order {broker_order_id} - callback nicht gefunden", "WARNING")
+            return
 
-            self.log_message(
-                f"Order bestätigt: {broker_order_id} ({order_info['type']})",
-                "SUCCESS"
-            )
+        order_info = self._order_callbacks[callback_id]
+        order_info['broker_order_id'] = broker_order_id
 
-            # Füge zu pending_orders hinzu für Anzeige
-            level = order_info['level']
-            self.pending_orders[broker_order_id] = {
-                'symbol': level['symbol'],
-                'type': level.get('type', 'LONG'),
-                'side': 'BUY' if order_info['type'] == 'ENTRY' and level['type'] == 'LONG' else 'SELL',
-                'quantity': level.get('shares', 100),
-                'status': 'SUBMITTED',
-                'timestamp': datetime.now().strftime('%H:%M:%S'),
-                'level_name': f"{level.get('scenario_name', 'N/A')} L{level.get('level_num', 0)}",
-                'order_object': order_info['order'],
-                'level_data': level,
-                'callback_id': callback_id
-            }
+        self.log_message(
+            f"Order bestätigt: {broker_order_id} ({order_info['type']})",
+            "SUCCESS"
+        )
 
-            # ENTRY Order: Level aus Warten entfernen (wird jetzt in Pending angezeigt)
-            if order_info['type'] == 'ENTRY':
-                if level in self.waiting_levels:
-                    self.waiting_levels.remove(level)
-                    self.update_waiting_levels_display()
-                    self.log_message(
-                        f"Level {level.get('scenario_name', 'N/A')} L{level.get('level_num', 0)} -> Pending",
-                        "INFO"
-                    )
+        # Füge zu pending_orders hinzu für Anzeige
+        level = order_info['level']
+        self.pending_orders[broker_order_id] = {
+            'symbol': level['symbol'],
+            'type': level.get('type', 'LONG'),
+            'side': 'BUY' if order_info['type'] == 'ENTRY' and level['type'] == 'LONG' else 'SELL',
+            'quantity': level.get('shares', 100),
+            'status': 'SUBMITTED',
+            'timestamp': datetime.now().strftime('%H:%M:%S'),
+            'level_name': f"{level.get('scenario_name', 'N/A')} L{level.get('level_num', 0)}",
+            'order_object': order_info['order'],
+            'level_data': level,
+            'callback_id': callback_id
+        }
 
-            self.update_pending_display()
+        # ENTRY Order: Level aus Warten entfernen (wird jetzt in Pending angezeigt)
+        if order_info['type'] == 'ENTRY':
+            if level in self.waiting_levels:
+                self.waiting_levels.remove(level)
+                self.update_waiting_levels_display()
+                self.log_message(
+                    f"Level {level.get('scenario_name', 'N/A')} L{level.get('level_num', 0)} -> Pending",
+                    "INFO"
+                )
 
-            # Prüfe ob es einen gespeicherten Fill für diese Order gibt (Race Condition Fix)
-            if hasattr(self, '_pending_fills') and broker_order_id in self._pending_fills:
-                fill_info = self._pending_fills.pop(broker_order_id)
-                print(f">>> Verarbeite gespeicherten Fill für {broker_order_id}")
-                self.log_message(f"Verarbeite zwischengespeicherten Fill für {broker_order_id}", "INFO")
-                # Rekursiv _on_order_filled aufrufen - jetzt ist die Order in pending_orders
-                self._on_order_filled(broker_order_id, fill_info)
+        self.update_pending_display()
+
+        # Prüfe ob es einen gespeicherten Fill für diese Order gibt (Race Condition Fix)
+        if hasattr(self, '_pending_fills') and broker_order_id in self._pending_fills:
+            fill_info = self._pending_fills.pop(broker_order_id)
+            print(f">>> Verarbeite gespeicherten Fill für {broker_order_id}")
+            self.log_message(f"Verarbeite zwischengespeicherten Fill für {broker_order_id}", "INFO")
+            # Rekursiv _on_order_filled aufrufen - jetzt ist die Order in pending_orders
+            self._on_order_filled(broker_order_id, fill_info)
 
     def _on_order_status_changed(self, broker_id: str, status: str, details: dict):
         """Callback für Order Status Updates"""
