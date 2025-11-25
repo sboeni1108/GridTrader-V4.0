@@ -541,6 +541,15 @@ class TradingBotWidget(QWidget):
         self._check_entry_conditions_sync(data)
         self._check_exit_conditions_sync(data)
 
+        # Unrealisierten P&L berechnen und Statistik aktualisieren
+        total_unrealized = sum(
+            self._calculate_unrealized_pnl(level, self._last_market_prices)
+            for level in self.active_levels
+        )
+        self.daily_stats['unrealized_pnl'] = total_unrealized
+        self.daily_stats['total_pnl'] = self.daily_stats['realized_pnl'] + total_unrealized
+        self.update_statistics_display()
+
         # Dashboard aktualisieren (verwendet gesamten Cache)
         self._update_dashboard(self._last_market_prices)
 
