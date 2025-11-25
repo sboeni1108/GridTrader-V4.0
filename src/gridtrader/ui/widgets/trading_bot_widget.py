@@ -32,11 +32,15 @@ try:
     from gridtrader.infrastructure.brokers.ibkr.ibkr_adapter import IBKRBrokerAdapter, IBKRConfig
     from gridtrader.infrastructure.brokers.ibkr import get_shared_adapter
     from gridtrader.infrastructure.brokers.ibkr.shared_connection import shared_connection
+    # NEU: IBKRService für Event-basierte Architektur
+    from gridtrader.infrastructure.brokers.ibkr.ibkr_service import get_ibkr_service, IBKRService
     IBKR_AVAILABLE = True
 except ImportError:
     IBKR_AVAILABLE = False
     get_shared_adapter = lambda: None
     shared_connection = None
+    get_ibkr_service = None
+    IBKRService = None
 
 # Trading Log Excel Export
 from gridtrader.infrastructure.reports.trading_log import TradingLogExporter
@@ -211,6 +215,11 @@ class TradingBotWidget(QWidget):
         self.connection_check_timer: Optional[QTimer] = None
         self.status_check_task = None  # Async Task für Order Status Checking
 
+        # NEU: IBKRService Referenz (Event-basierte Architektur)
+        self._ibkr_service: Optional[IBKRService] = None
+        self._service_connected = False
+        self._order_callbacks: Dict[str, dict] = {}  # callback_id -> order_info
+
         # Trading Hours (NY Zeit) - Default: 9:30-16:00
         self.trading_hours_start = time(9, 30)  # 9:30 AM NY
         self.trading_hours_end = time(16, 0)    # 4:00 PM NY
@@ -235,8 +244,10 @@ class TradingBotWidget(QWidget):
         self.log_message("Trading-Bot gestartet", "INFO")
 
         if IBKR_AVAILABLE:
-            self.log_message("IBKR-Integration verfügbar (Shared Connection)", "INFO")
-            # Starte Connection Check Timer
+            self.log_message("IBKR-Integration verfügbar", "INFO")
+            # NEU: Initialisiere IBKRService (Event-basierte Architektur)
+            self._setup_ibkr_service()
+            # Starte Connection Check Timer (für Legacy-Kompatibilität)
             self._start_connection_check_timer()
         else:
             self.log_message("IBKR nicht verfügbar - pip install ib_insync", "WARNING")
@@ -395,6 +406,503 @@ class TradingBotWidget(QWidget):
                 self.log_message("Auto-Save: Logs gespeichert", "INFO")
             except Exception as e:
                 self.log_message(f"Auto-Save Fehler: {e}", "ERROR")
+
+    # ========== NEU: IBKR SERVICE INTEGRATION ==========
+
+    def _setup_ibkr_service(self):
+        """
+        Initialisiere IBKRService und verbinde Signals
+
+        Der IBKRService verwendet einen dedizierten Thread mit eigenem Event Loop,
+        wodurch Qt/asyncio Event Loop Konflikte vermieden werden.
+        """
+        if not IBKR_AVAILABLE or get_ibkr_service is None:
+            self.log_message("IBKRService nicht verfügbar", "WARNING")
+            return
+
+        try:
+            self._ibkr_service = get_ibkr_service()
+
+            # Verbinde Signals (Thread-safe über Qt Signal/Slot)
+            self._ibkr_service.signals.connected.connect(self._on_service_connected)
+            self._ibkr_service.signals.disconnected.connect(self._on_service_disconnected)
+            self._ibkr_service.signals.connection_lost.connect(self._on_service_connection_lost)
+            self._ibkr_service.signals.market_data_update.connect(self._on_market_data_update)
+            self._ibkr_service.signals.order_placed.connect(self._on_order_placed)
+            self._ibkr_service.signals.order_status_changed.connect(self._on_order_status_changed)
+            self._ibkr_service.signals.order_filled.connect(self._on_order_filled)
+            self._ibkr_service.signals.order_error.connect(self._on_order_error)
+
+            self.log_message("IBKRService initialisiert (Event-basierte Architektur)", "SUCCESS")
+
+        except Exception as e:
+            self.log_message(f"IBKRService Initialisierung fehlgeschlagen: {e}", "ERROR")
+
+    def _on_service_connected(self, success: bool, message: str):
+        """Callback wenn IBKRService verbunden ist"""
+        self._service_connected = success
+
+        if success:
+            self.log_message(f"IBKRService: {message}", "SUCCESS")
+
+            # Subscribiere Market Data für alle aktiven Symbole
+            self._subscribe_active_symbols()
+        else:
+            self.log_message(f"IBKRService Verbindungsfehler: {message}", "ERROR")
+
+    def _on_service_disconnected(self):
+        """Callback wenn IBKRService getrennt wird"""
+        self._service_connected = False
+        self.log_message("IBKRService getrennt", "INFO")
+
+    def _on_service_connection_lost(self):
+        """Callback wenn IBKRService Verbindung verliert"""
+        self._service_connected = False
+        self.log_message("IBKRService: Verbindung verloren!", "ERROR")
+
+    def _subscribe_active_symbols(self):
+        """Subscribiere Market Data für alle aktiven Symbole"""
+        if not self._ibkr_service or not self._service_connected:
+            return
+
+        # Sammle alle Symbole
+        symbols = set()
+        for level in self.waiting_levels:
+            symbols.add(level['symbol'])
+        for level in self.active_levels:
+            symbols.add(level.get('symbol', ''))
+
+        if symbols:
+            self._ibkr_service.subscribe_market_data(list(symbols))
+            self.log_message(f"Market Data subscribed: {', '.join(symbols)}", "INFO")
+
+    def _on_market_data_update(self, data: dict):
+        """
+        Callback für Market Data Updates (PUSH von IBKRService)
+
+        Diese Methode wird automatisch aufgerufen wenn neue Kursdaten kommen.
+        Kein Polling mehr nötig!
+        """
+        symbol = data.get('symbol', '')
+        if not symbol:
+            return
+
+        # Cache aktualisieren (für UI-Anzeige)
+        self._last_market_prices[symbol] = {
+            'bid': data.get('bid', 0),
+            'ask': data.get('ask', 0),
+            'last': data.get('last', 0),
+            'mid': (data.get('bid', 0) + data.get('ask', 0)) / 2 if data.get('bid') and data.get('ask') else data.get('last', 0)
+        }
+
+        # Update Basis-Preise für wartende Levels ohne Preis
+        for level in self.waiting_levels:
+            if level['symbol'] == symbol and level.get('base_price') is None:
+                current_price = data.get('last', 0) or data.get('close', 0)
+                if current_price > 0:
+                    level['base_price'] = current_price
+                    level['entry_price'] = current_price * (1 + level['entry_pct'] / 100)
+                    level['exit_price'] = level['entry_price'] * (1 + level['exit_pct'] / 100)
+
+                    self.log_message(
+                        f"Level {level.get('scenario_name')} initialisiert mit ${current_price:.2f}",
+                        "INFO"
+                    )
+
+        # Waiting Table aktualisieren
+        self._update_waiting_table_prices(symbol)
+
+        # Entry/Exit Conditions prüfen (synchron - kein async nötig!)
+        self._check_entry_conditions_sync(data)
+        self._check_exit_conditions_sync(data)
+
+    def _check_entry_conditions_sync(self, market_data: dict):
+        """
+        Prüfe Entry-Bedingungen synchron (von Market Data Update aufgerufen)
+
+        Diese Methode ersetzt die async Version für den Service-Modus.
+        """
+        # Prüfe Trading-Stunden
+        if not self.is_market_open():
+            return
+
+        symbol = market_data.get('symbol', '')
+        if not symbol:
+            return
+
+        levels_to_activate = []
+
+        for i, level in enumerate(self.waiting_levels):
+            if level.get('status') == 'paused':
+                continue
+
+            if level['symbol'] != symbol:
+                continue
+
+            # Eindeutiger Level-Identifier
+            scenario_name = level.get('scenario_name', 'unknown')
+            level_num = level.get('level_num', 0)
+            unique_level_id = f"{scenario_name}_L{level_num}"
+
+            if unique_level_id in self._orders_placed_for_levels:
+                continue
+
+            entry_price = level.get('entry_price')
+            if entry_price is None:
+                continue
+
+            level_type = level['type']
+            triggered = False
+            check_price = 0
+
+            # Entry-Bedingung prüfen
+            if level_type == 'LONG':
+                check_price = market_data.get('ask', 0) or market_data.get('last', 0)
+                if check_price > 0 and check_price <= entry_price:
+                    triggered = True
+                    self.log_message(
+                        f"LONG ENTRY: {symbol} ASK=${check_price:.2f} <= Ziel=${entry_price:.2f}",
+                        "TRADE"
+                    )
+            elif level_type == 'SHORT':
+                check_price = market_data.get('bid', 0) or market_data.get('last', 0)
+                if check_price > 0 and check_price >= entry_price:
+                    triggered = True
+                    self.log_message(
+                        f"SHORT ENTRY: {symbol} BID=${check_price:.2f} >= Ziel=${entry_price:.2f}",
+                        "TRADE"
+                    )
+
+            if triggered:
+                levels_to_activate.append((i, level, check_price))
+
+        # Aktiviere Levels
+        for idx, level, price in levels_to_activate:
+            self._place_entry_order_via_service(level, price)
+
+    def _check_exit_conditions_sync(self, market_data: dict):
+        """
+        Prüfe Exit-Bedingungen synchron (von Market Data Update aufgerufen)
+        """
+        if not self.is_market_open():
+            return
+
+        symbol = market_data.get('symbol', '')
+        if not symbol:
+            return
+
+        levels_to_exit = []
+
+        for i, level in enumerate(self.active_levels):
+            if level.get('symbol') != symbol:
+                continue
+
+            if level.get('exit_order_placed'):
+                continue
+
+            exit_price = level.get('exit_price')
+            if exit_price is None:
+                continue
+
+            level_type = level.get('type', 'LONG')
+            triggered = False
+            check_price = 0
+
+            if level_type == 'LONG':
+                check_price = market_data.get('bid', 0) or market_data.get('last', 0)
+                if check_price > 0 and check_price >= exit_price:
+                    triggered = True
+                    self.log_message(
+                        f"LONG EXIT: {symbol} BID=${check_price:.2f} >= Ziel=${exit_price:.2f}",
+                        "TRADE"
+                    )
+            elif level_type == 'SHORT':
+                check_price = market_data.get('ask', 0) or market_data.get('last', 0)
+                if check_price > 0 and check_price <= exit_price:
+                    triggered = True
+                    self.log_message(
+                        f"SHORT EXIT: {symbol} ASK=${check_price:.2f} <= Ziel=${exit_price:.2f}",
+                        "TRADE"
+                    )
+
+            if triggered:
+                levels_to_exit.append((i, level, check_price))
+
+        # Exit Orders platzieren
+        for idx, level, price in levels_to_exit:
+            self._place_exit_order_via_service(level, price)
+
+    def _place_entry_order_via_service(self, level: dict, trigger_price: float):
+        """Platziere Entry Order über IBKRService"""
+        if not self._ibkr_service or not self._service_connected:
+            self.log_message("IBKRService nicht verbunden - keine Order platziert", "ERROR")
+            return
+
+        if not self.live_trading_enabled:
+            self.log_message(
+                f"ORDER (Simulation): {level['type']} {level.get('shares', 100)}x {level['symbol']}",
+                "TRADE"
+            )
+            return
+
+        try:
+            from gridtrader.domain.models.order import Order, OrderSide, OrderType
+            from decimal import Decimal
+
+            # Level-Schutz
+            scenario_name = level.get('scenario_name', 'unknown')
+            level_num = level.get('level_num', 0)
+            unique_level_id = f"{scenario_name}_L{level_num}"
+
+            if unique_level_id in self._orders_placed_for_levels:
+                return
+
+            self._orders_placed_for_levels.add(unique_level_id)
+
+            # Domain Order erstellen
+            order = Order(
+                symbol=level['symbol'],
+                side=OrderSide.BUY if level['type'] == 'LONG' else OrderSide.SELL,
+                order_type=OrderType.LIMIT,
+                quantity=level.get('shares', 100)
+            )
+            order.limit_price = Decimal(str(level['entry_price']))
+
+            # Order via Service platzieren (non-blocking!)
+            callback_id = self._ibkr_service.place_order(order)
+
+            # Tracking
+            self._order_callbacks[callback_id] = {
+                'level': level,
+                'type': 'ENTRY',
+                'order': order,
+                'unique_level_id': unique_level_id
+            }
+
+            self.log_message(
+                f"ENTRY ORDER: {level['type']} {level.get('shares', 100)}x {level['symbol']} @ ${level['entry_price']:.2f}",
+                "TRADE"
+            )
+
+        except Exception as e:
+            self.log_message(f"Entry Order Fehler: {e}", "ERROR")
+
+    def _place_exit_order_via_service(self, level: dict, trigger_price: float):
+        """Platziere Exit Order über IBKRService"""
+        if not self._ibkr_service or not self._service_connected:
+            return
+
+        if not self.live_trading_enabled:
+            return
+
+        try:
+            from gridtrader.domain.models.order import Order, OrderSide, OrderType
+            from decimal import Decimal
+
+            # Markiere Level als Exit-Order platziert
+            level['exit_order_placed'] = True
+
+            # Domain Order erstellen
+            order = Order(
+                symbol=level['symbol'],
+                side=OrderSide.SELL if level['type'] == 'LONG' else OrderSide.BUY,
+                order_type=OrderType.LIMIT,
+                quantity=level.get('shares', 100)
+            )
+            order.limit_price = Decimal(str(level['exit_price']))
+
+            # Order via Service platzieren
+            callback_id = self._ibkr_service.place_order(order)
+
+            # Tracking
+            self._order_callbacks[callback_id] = {
+                'level': level,
+                'type': 'EXIT',
+                'order': order
+            }
+
+            self.log_message(
+                f"EXIT ORDER: {level.get('shares', 100)}x {level['symbol']} @ ${level['exit_price']:.2f}",
+                "TRADE"
+            )
+
+        except Exception as e:
+            self.log_message(f"Exit Order Fehler: {e}", "ERROR")
+
+    def _on_order_placed(self, callback_id: str, broker_order_id: str):
+        """Callback wenn Order bei IB platziert wurde"""
+        if callback_id in self._order_callbacks:
+            order_info = self._order_callbacks[callback_id]
+            order_info['broker_order_id'] = broker_order_id
+
+            self.log_message(
+                f"Order bestätigt: {broker_order_id} ({order_info['type']})",
+                "SUCCESS"
+            )
+
+            # Füge zu pending_orders hinzu für Anzeige
+            level = order_info['level']
+            self.pending_orders[broker_order_id] = {
+                'symbol': level['symbol'],
+                'type': level.get('type', 'LONG'),
+                'side': 'BUY' if order_info['type'] == 'ENTRY' and level['type'] == 'LONG' else 'SELL',
+                'quantity': level.get('shares', 100),
+                'status': 'SUBMITTED',
+                'timestamp': datetime.now().strftime('%H:%M:%S'),
+                'level_name': f"{level.get('scenario_name', 'N/A')} L{level.get('level_num', 0)}",
+                'order_object': order_info['order'],
+                'level_data': level,
+                'callback_id': callback_id
+            }
+
+            self.update_pending_display()
+
+    def _on_order_status_changed(self, broker_id: str, status: str, details: dict):
+        """Callback für Order Status Updates"""
+        if broker_id in self.pending_orders:
+            self.pending_orders[broker_id]['status'] = status
+            self.update_pending_display()
+
+            self.log_message(f"Order {broker_id}: {status}", "INFO")
+
+    def _on_order_filled(self, broker_id: str, fill_info: dict):
+        """Callback wenn Order gefüllt wurde"""
+        if broker_id not in self.pending_orders:
+            return
+
+        order_info = self.pending_orders[broker_id]
+        callback_id = order_info.get('callback_id')
+
+        if callback_id and callback_id in self._order_callbacks:
+            cb_info = self._order_callbacks[callback_id]
+            level = cb_info['level']
+            order_type = cb_info['type']
+
+            fill_price = fill_info.get('price', 0) or fill_info.get('avg_fill_price', 0)
+            commission = fill_info.get('commission', 0)
+
+            if order_type == 'ENTRY':
+                # Entry gefüllt -> Level wird aktiv
+                self._handle_entry_fill(level, fill_price, commission)
+            elif order_type == 'EXIT':
+                # Exit gefüllt -> Level wird recycelt
+                self._handle_exit_fill(level, fill_price, commission)
+
+            # Cleanup
+            del self._order_callbacks[callback_id]
+
+        # Aus pending entfernen
+        if broker_id in self.pending_orders:
+            del self.pending_orders[broker_id]
+            self.update_pending_display()
+
+    def _handle_entry_fill(self, level: dict, fill_price: float, commission: float):
+        """Verarbeite gefüllten Entry"""
+        self.log_message(
+            f"ENTRY FILLED: {level['symbol']} @ ${fill_price:.2f} (Comm: ${commission:.2f})",
+            "SUCCESS"
+        )
+
+        # Level zu aktiv verschieben
+        level['entry_fill_price'] = fill_price
+        level['entry_commission'] = commission
+        level['entry_time'] = datetime.now().isoformat()
+        level['exit_order_placed'] = False
+
+        # Aus waiting entfernen und zu active hinzufügen
+        if level in self.waiting_levels:
+            self.waiting_levels.remove(level)
+        self.active_levels.append(level)
+
+        # Level-Schutz entfernen
+        scenario_name = level.get('scenario_name', 'unknown')
+        level_num = level.get('level_num', 0)
+        unique_level_id = f"{scenario_name}_L{level_num}"
+        self._orders_placed_for_levels.discard(unique_level_id)
+
+        # UI aktualisieren
+        self.update_waiting_levels_display()
+        self.update_active_levels_display()
+
+        # Daily Stats
+        self.daily_stats['total_trades'] += 1
+        self.daily_stats['total_commissions'] += commission
+        self.daily_stats['total_shares'] += level.get('shares', 100)
+
+    def _handle_exit_fill(self, level: dict, fill_price: float, commission: float):
+        """Verarbeite gefüllten Exit"""
+        entry_price = level.get('entry_fill_price', level.get('entry_price', 0))
+        shares = level.get('shares', 100)
+
+        # P&L berechnen
+        if level['type'] == 'LONG':
+            pnl = (fill_price - entry_price) * shares - commission - level.get('entry_commission', 0)
+        else:
+            pnl = (entry_price - fill_price) * shares - commission - level.get('entry_commission', 0)
+
+        self.log_message(
+            f"EXIT FILLED: {level['symbol']} @ ${fill_price:.2f}, P&L: ${pnl:+.2f}",
+            "SUCCESS" if pnl >= 0 else "WARNING"
+        )
+
+        # Level aus active entfernen
+        if level in self.active_levels:
+            self.active_levels.remove(level)
+
+        # Trade loggen
+        trade_data = {
+            'timestamp': datetime.now().isoformat(),
+            'symbol': level['symbol'],
+            'type': level['type'],
+            'shares': shares,
+            'entry_price': entry_price,
+            'exit_price': fill_price,
+            'pnl': pnl,
+            'commission': commission + level.get('entry_commission', 0),
+            'scenario': level.get('scenario_name', 'N/A'),
+            'level': level.get('level_num', 0)
+        }
+
+        self._write_trade_to_logs(trade_data)
+
+        # Daily Stats
+        self.daily_stats['realized_pnl'] += pnl
+        self.daily_stats['total_pnl'] += pnl
+        self.daily_stats['total_commissions'] += commission
+        if pnl >= 0:
+            self.daily_stats['winning_trades'] += 1
+        else:
+            self.daily_stats['losing_trades'] += 1
+
+        # Level recyceln (zurück zu waiting)
+        level['base_price'] = None
+        level['entry_price'] = None
+        level['exit_price'] = None
+        level['entry_fill_price'] = None
+        level['entry_commission'] = None
+        level['entry_time'] = None
+        level['exit_order_placed'] = False
+
+        self.waiting_levels.append(level)
+
+        # UI aktualisieren
+        self.update_active_levels_display()
+        self.update_waiting_levels_display()
+        self._update_daily_stats_display()
+
+    def _on_order_error(self, callback_id: str, error_msg: str):
+        """Callback für Order Fehler"""
+        self.log_message(f"Order Fehler: {error_msg}", "ERROR")
+
+        # Level-Schutz entfernen bei Fehler
+        if callback_id in self._order_callbacks:
+            cb_info = self._order_callbacks[callback_id]
+            unique_level_id = cb_info.get('unique_level_id')
+            if unique_level_id:
+                self._orders_placed_for_levels.discard(unique_level_id)
+            del self._order_callbacks[callback_id]
+
+    # ========== ENDE: IBKR SERVICE INTEGRATION ==========
 
     def save_logs_now(self):
         """Manuelles Speichern der Logs (für Dashboard-Button)"""
