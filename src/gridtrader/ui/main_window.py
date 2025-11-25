@@ -118,12 +118,12 @@ class MainWindow(QMainWindow):
         trades_layout = QVBoxLayout()
 
         self.dashboard_trades_table = QTableWidget()
-        self.dashboard_trades_table.setColumnCount(6)
+        self.dashboard_trades_table.setColumnCount(9)
         self.dashboard_trades_table.setHorizontalHeaderLabels([
-            "Zeit", "Symbol", "Anzahl", "Seite", "Preis", "Kommission"
+            "Zeit", "Symbol", "Level", "Typ", "Seite", "Anzahl", "Preis", "Total", "Kommission"
         ])
         self.dashboard_trades_table.horizontalHeader().setStretchLastSection(True)
-        self.dashboard_trades_table.setMaximumHeight(200)
+        self.dashboard_trades_table.setMaximumHeight(250)
         trades_layout.addWidget(self.dashboard_trades_table)
 
         trades_group.setLayout(trades_layout)
@@ -250,7 +250,16 @@ class MainWindow(QMainWindow):
         """Add a trade to the Dashboard trades table
 
         Args:
-            trade_data: Dict with trade information
+            trade_data: Dict with trade information:
+                - timestamp: Zeit des Trades
+                - symbol: Aktien-Symbol
+                - level: Level-Name (z.B. "Scenario1 L2")
+                - type: LONG oder SHORT
+                - side: BUY oder SELL
+                - shares: Anzahl Aktien
+                - price: Ausführungspreis
+                - total: Gesamtkosten (shares * price)
+                - commission: Kommission
         """
         if not hasattr(self, 'dashboard_trades_table'):
             return
@@ -266,7 +275,7 @@ class MainWindow(QMainWindow):
         self.dashboard_trades_table.setRowCount(len(self.dashboard_trades))
 
         for row, trade in enumerate(self.dashboard_trades):
-            # Time
+            # Zeit
             timestamp = trade.get('timestamp', datetime.now().strftime('%H:%M:%S'))
             if isinstance(timestamp, str) and 'T' in timestamp:
                 timestamp = timestamp.split('T')[1][:8]
@@ -275,20 +284,37 @@ class MainWindow(QMainWindow):
             # Symbol
             self.dashboard_trades_table.setItem(row, 1, QTableWidgetItem(trade.get('symbol', 'N/A')))
 
-            # Shares
-            self.dashboard_trades_table.setItem(row, 2, QTableWidgetItem(str(trade.get('shares', 0))))
+            # Level (Scenario + Level Nummer)
+            level_name = trade.get('level', 'N/A')
+            self.dashboard_trades_table.setItem(row, 2, QTableWidgetItem(level_name))
 
-            # Side (Buy/Sell)
+            # Typ (LONG/SHORT) mit Farbe
+            trade_type = trade.get('type', 'N/A')
+            type_item = QTableWidgetItem(trade_type)
+            type_item.setForeground(QColor(0, 128, 0) if trade_type == 'LONG' else QColor(200, 0, 0))
+            self.dashboard_trades_table.setItem(row, 3, type_item)
+
+            # Side (Buy/Sell) mit Farbe
             side = trade.get('side', 'N/A')
             side_item = QTableWidgetItem(side)
             side_item.setForeground(QColor(0, 128, 0) if side == 'BUY' else QColor(200, 0, 0))
-            self.dashboard_trades_table.setItem(row, 3, side_item)
+            self.dashboard_trades_table.setItem(row, 4, side_item)
 
-            # Price
-            self.dashboard_trades_table.setItem(row, 4, QTableWidgetItem(f"${trade.get('price', 0):.2f}"))
+            # Anzahl Aktien
+            shares = trade.get('shares', 0)
+            self.dashboard_trades_table.setItem(row, 5, QTableWidgetItem(str(shares)))
 
-            # Commission
-            self.dashboard_trades_table.setItem(row, 5, QTableWidgetItem(f"${trade.get('commission', 0):.2f}"))
+            # Preis
+            price = trade.get('price', 0)
+            self.dashboard_trades_table.setItem(row, 6, QTableWidgetItem(f"${price:.2f}"))
+
+            # Total (shares * price)
+            total = trade.get('total', shares * price)
+            self.dashboard_trades_table.setItem(row, 7, QTableWidgetItem(f"${total:.2f}"))
+
+            # Kommission
+            commission = trade.get('commission', 0)
+            self.dashboard_trades_table.setItem(row, 8, QTableWidgetItem(f"${commission:.2f}"))
         
     def _create_analyse(self):
         analyse = QWidget()

@@ -982,6 +982,19 @@ class TradingBotWidget(QWidget):
         self.daily_stats['total_commissions'] += commission
         self.daily_stats['total_shares'] += level.get('shares', 100)
 
+        # Trade zum Dashboard hinzufügen (Entry)
+        shares = level.get('shares', 100)
+        side = 'BUY' if level['type'] == 'LONG' else 'SELL'
+        self._add_trade_to_dashboard(
+            symbol=level['symbol'],
+            level_name=f"{level.get('scenario_name', 'N/A')} L{level.get('level_num', 0)}",
+            trade_type=level['type'],
+            side=side,
+            shares=shares,
+            price=fill_price,
+            commission=commission
+        )
+
     def _handle_exit_fill(self, level: dict, fill_price: float, commission: float):
         """Verarbeite gefüllten Exit"""
         entry_price = level.get('entry_fill_price', level.get('entry_price', 0))
@@ -1031,6 +1044,18 @@ class TradingBotWidget(QWidget):
             # Excel Trading Log schreiben
             if hasattr(self, 'trading_log_exporter'):
                 self.trading_log_exporter.add_trade(trade_data)
+
+        # Trade zum Dashboard hinzufügen (Exit)
+        side = 'SELL' if level['type'] == 'LONG' else 'BUY'  # Exit ist gegenteilig
+        self._add_trade_to_dashboard(
+            symbol=level['symbol'],
+            level_name=f"{level.get('scenario_name', 'N/A')} L{level.get('level_num', 0)}",
+            trade_type=level['type'],
+            side=side,
+            shares=shares,
+            price=fill_price,
+            commission=commission
+        )
 
         # Daily Stats
         self.daily_stats['realized_pnl'] += pnl
@@ -1113,6 +1138,46 @@ class TradingBotWidget(QWidget):
                 break
 
     # ========== ENDE: IBKR SERVICE INTEGRATION ==========
+
+    def _add_trade_to_dashboard(self, symbol: str, level_name: str, trade_type: str,
+                                 side: str, shares: int, price: float, commission: float):
+        """Füge einen Trade zur Dashboard-Trades-Tabelle hinzu
+
+        Args:
+            symbol: Aktien-Symbol (z.B. "AAPL")
+            level_name: Level-Bezeichnung (z.B. "Scenario1 L2")
+            trade_type: LONG oder SHORT
+            side: BUY oder SELL
+            shares: Anzahl Aktien
+            price: Ausführungspreis
+            commission: Kommission
+        """
+        try:
+            # Find MainWindow
+            main_window = self.parent()
+            while main_window and not hasattr(main_window, 'add_dashboard_trade'):
+                main_window = main_window.parent()
+
+            if not main_window:
+                return
+
+            trade_data = {
+                'timestamp': datetime.now().strftime('%H:%M:%S'),
+                'symbol': symbol,
+                'level': level_name,
+                'type': trade_type,
+                'side': side,
+                'shares': shares,
+                'price': price,
+                'total': shares * price,
+                'commission': commission
+            }
+
+            main_window.add_dashboard_trade(trade_data)
+
+        except Exception as e:
+            # Silently ignore dashboard update errors
+            print(f"Dashboard Trade Update Fehler: {e}")
 
     def save_logs_now(self):
         """Manuelles Speichern der Logs (für Dashboard-Button)"""
@@ -3574,7 +3639,7 @@ class TradingBotWidget(QWidget):
             self.update_pending_display()
 
     def _add_filled_order_to_dashboard(self, order_info: dict, fill_price: float, commission: float):
-        """Add filled order to Dashboard trades panel"""
+        """Add filled order to Dashboard trades panel (Legacy-Methode für handle_order_filled)"""
         try:
             # Find MainWindow
             main_window = self.parent()
@@ -3584,12 +3649,21 @@ class TradingBotWidget(QWidget):
             if not main_window:
                 return
 
+            shares = order_info.get('quantity', 0)
+            side = order_info.get('side', 'N/A')
+
+            # Bestimme den Typ basierend auf Side (Annahme: BUY=LONG Entry, SELL=SHORT Entry)
+            trade_type = 'LONG' if side == 'BUY' else 'SHORT'
+
             dashboard_trade = {
                 'timestamp': datetime.now().strftime('%H:%M:%S'),
                 'symbol': order_info.get('symbol', 'N/A'),
-                'shares': order_info.get('quantity', 0),
-                'side': order_info.get('side', 'N/A'),
+                'level': order_info.get('level_name', 'Manual'),
+                'type': trade_type,
+                'side': side,
+                'shares': shares,
                 'price': fill_price,
+                'total': shares * fill_price,
                 'commission': commission
             }
 
