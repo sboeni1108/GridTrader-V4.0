@@ -430,6 +430,7 @@ class TradingBotWidget(QWidget):
             self._ibkr_service.signals.order_status_changed.connect(self._on_order_status_changed)
             self._ibkr_service.signals.order_filled.connect(self._on_order_filled)
             self._ibkr_service.signals.order_error.connect(self._on_order_error)
+            self._ibkr_service.signals.commission_update.connect(self._on_commission_update)
 
             self.log_message("IBKRService initialisiert (Event-basierte Architektur)", "SUCCESS")
 
@@ -1089,6 +1090,27 @@ class TradingBotWidget(QWidget):
             if unique_level_id:
                 self._orders_placed_for_levels.discard(unique_level_id)
             del self._order_callbacks[callback_id]
+
+    def _on_commission_update(self, broker_id: str, total_commission: float):
+        """Callback für nachträgliche Kommissions-Updates von IBKR"""
+        # Finde das zugehörige Level in pending_orders oder active_levels
+        if broker_id in self.pending_orders:
+            order_info = self.pending_orders[broker_id]
+            order_info['commission'] = total_commission
+            self.log_message(
+                f"Kommission aktualisiert für Order {broker_id}: ${total_commission:.4f}",
+                "DEBUG"
+            )
+
+        # Aktualisiere auch in active_levels falls vorhanden
+        for level in self.active_levels:
+            if level.get('entry_order_id') == broker_id:
+                level['entry_commission'] = total_commission
+                self.log_message(
+                    f"Entry-Kommission aktualisiert für {level.get('scenario_name')} L{level.get('level_num')}: ${total_commission:.4f}",
+                    "DEBUG"
+                )
+                break
 
     # ========== ENDE: IBKR SERVICE INTEGRATION ==========
 

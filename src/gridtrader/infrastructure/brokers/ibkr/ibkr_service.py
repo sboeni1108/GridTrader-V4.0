@@ -83,6 +83,7 @@ class IBKRServiceSignals(QObject):
     order_status_changed = Signal(str, str, dict)  # broker_id, status, details
     order_filled = Signal(str, dict)  # broker_id, fill_info
     order_error = Signal(str, str)  # callback_id, error_message
+    commission_update = Signal(str, float)  # broker_id, total_commission
 
     # Account
     account_update = Signal(dict)
@@ -145,6 +146,8 @@ class IBKRService:
         # Order Tracking
         self._order_callbacks: Dict[str, str] = {}  # broker_id -> callback_id
         self._pending_orders: Dict[str, Order] = {}  # callback_id -> Order
+        self._order_commissions: Dict[str, float] = {}  # broker_id -> total_commission
+        self._processed_exec_ids: Set[str] = set()  # Verhindert Doppelzählung von Kommissionen
 
         # Thread und Event Loop
         self._thread: Optional[threading.Thread] = None
@@ -335,6 +338,7 @@ class IBKRService:
             # Event Handlers
             self._ib.orderStatusEvent += self._on_order_status
             self._ib.execDetailsEvent += self._on_execution
+            self._ib.commissionReportEvent += self._on_commission_report  # NEU: Kommissions-Handler
             self._ib.errorEvent += self._on_ib_error
             self._ib.disconnectedEvent += self._on_disconnected
 
@@ -702,8 +706,8 @@ class IBKRService:
 
             self.signals.order_status_changed.emit(broker_id, status, details)
 
-            if status == 'Filled':
-                self.signals.order_filled.emit(broker_id, details)
+            # ENTFERNT: order_filled wird jetzt NUR von _on_execution emittiert
+            # Das verhindert doppelte Signale und stellt sicher, dass Fill-Details korrekt sind
 
         except Exception as e:
             print(f"Order Status Callback Fehler: {e}")
@@ -712,21 +716,61 @@ class IBKRService:
         """Trade Execution Callback"""
         try:
             broker_id = str(trade.order.orderId)
+            exec_id = fill.execution.execId
+
+            # Kommission aus dem Fill (falls bereits verfügbar)
+            commission = 0.0
+            if fill.commissionReport and fill.commissionReport.commission:
+                commission = float(fill.commissionReport.commission)
+                # Markiere als verarbeitet um Doppelzählung zu vermeiden
+                self._processed_exec_ids.add(exec_id)
+                # Speichere/Addiere Kommission für diese Order
+                self._order_commissions[broker_id] = self._order_commissions.get(broker_id, 0.0) + commission
 
             fill_info = {
-                'exec_id': fill.execution.execId,
+                'exec_id': exec_id,
                 'shares': fill.execution.shares,
                 'price': float(fill.execution.price),
-                'commission': float(fill.commissionReport.commission) if fill.commissionReport else 0.0,
+                'commission': commission,
                 'time': fill.execution.time,
             }
 
-            print(f"Execution: ID={broker_id}, {fill_info['shares']}@${fill_info['price']:.2f}")
+            print(f"Execution: ID={broker_id}, {fill_info['shares']}@${fill_info['price']:.2f}, Commission=${commission:.4f}")
 
             self.signals.order_filled.emit(broker_id, fill_info)
 
         except Exception as e:
             print(f"Execution Callback Fehler: {e}")
+
+    def _on_commission_report(self, trade, fill, report):
+        """Commission Report Callback - kommt oft NACH dem Execution Event"""
+        try:
+            broker_id = str(trade.order.orderId)
+            exec_id = fill.execution.execId if fill else None
+            commission = float(report.commission) if report and report.commission else 0.0
+
+            if commission > 0:
+                # Prüfe ob diese Exec-ID bereits in _on_execution verarbeitet wurde
+                if exec_id and exec_id in self._processed_exec_ids:
+                    print(f"Commission Report: ID={broker_id}, ExecID={exec_id} bereits verarbeitet, überspringe")
+                    return
+
+                # Markiere als verarbeitet
+                if exec_id:
+                    self._processed_exec_ids.add(exec_id)
+
+                # Addiere zur Gesamt-Kommission für diese Order
+                prev_commission = self._order_commissions.get(broker_id, 0.0)
+                self._order_commissions[broker_id] = prev_commission + commission
+
+                total_commission = self._order_commissions[broker_id]
+                print(f"Commission Report: ID={broker_id}, This=${commission:.4f}, Total=${total_commission:.4f}")
+
+                # Sende Update mit Gesamt-Kommission
+                self.signals.commission_update.emit(broker_id, total_commission)
+
+        except Exception as e:
+            print(f"Commission Report Callback Fehler: {e}")
 
     def cancel_order(self, broker_order_id: str):
         """Storniere Order (aufgerufen vom Qt Thread)"""
