@@ -523,14 +523,40 @@ class TradingBotWidget(QWidget):
         # Update Basis-Preise für wartende Levels ohne Preis
         for level in self.waiting_levels:
             if level['symbol'] == symbol and level.get('base_price') is None:
-                current_price = data.get('last', 0) or data.get('close', 0)
+                # FIX: Verwende konsistenten Preis basierend auf Level-Typ
+                # LONG: Basis = Ask (wir kaufen zum Ask)
+                # SHORT: Basis = Bid (wir verkaufen zum Bid)
+                level_type = level.get('type', 'LONG')
+                if level_type == 'LONG':
+                    current_price = data.get('ask', 0) or data.get('last', 0) or data.get('close', 0)
+                else:  # SHORT
+                    current_price = data.get('bid', 0) or data.get('last', 0) or data.get('close', 0)
+
                 if current_price > 0:
                     level['base_price'] = current_price
                     level['entry_price'] = current_price * (1 + level['entry_pct'] / 100)
                     level['exit_price'] = level['entry_price'] * (1 + level['exit_pct'] / 100)
 
+                    # FIX: Aktualisiere original_level mit den berechneten Preisen für korrektes Recycling!
+                    # Bei "Aktueller Marktpreis" war original_level initial mit None-Preisen gespeichert
+                    if 'original_level' not in level or level.get('original_level', {}).get('entry_price') is None:
+                        level['original_level'] = {
+                            'scenario_name': level.get('scenario_name'),
+                            'level_num': level.get('level_num'),
+                            'symbol': level.get('symbol'),
+                            'type': level.get('type'),
+                            'shares': level.get('shares'),
+                            'entry_pct': level.get('entry_pct'),
+                            'exit_pct': level.get('exit_pct'),
+                            'base_price': level['base_price'],
+                            'entry_price': level['entry_price'],
+                            'exit_price': level['exit_price'],
+                        }
+
                     self.log_message(
-                        f"Level {level.get('scenario_name')} initialisiert mit ${current_price:.2f}",
+                        f"Level {level.get('scenario_name')} L{level.get('level_num', 0)} initialisiert: "
+                        f"Basis={'Ask' if level_type == 'LONG' else 'Bid'}=${current_price:.2f}, "
+                        f"Entry=${level['entry_price']:.2f}",
                         "INFO"
                     )
 
@@ -1014,10 +1040,32 @@ class TradingBotWidget(QWidget):
         else:
             self.daily_stats['losing_trades'] += 1
 
-        # Level recyceln (zurück zu waiting)
-        level['base_price'] = None
-        level['entry_price'] = None
-        level['exit_price'] = None
+        # Level recyceln (zurück zu waiting) - MIT ORIGINAL-PREISEN!
+        # FIX: Verwende original_level um die ursprünglichen Zielpreise beizubehalten
+        original_level = level.get('original_level')
+
+        if original_level:
+            # Stelle Original-Preise wieder her
+            level['base_price'] = original_level.get('base_price')
+            level['entry_price'] = original_level.get('entry_price')
+            level['exit_price'] = original_level.get('exit_price')
+            self.log_message(
+                f"♻️ Level {level.get('scenario_name')} L{level.get('level_num', 0)} recycled "
+                f"mit Original Entry=${level['entry_price']:.2f}",
+                "INFO"
+            )
+        else:
+            # Fallback: Setze auf None für Neuberechnung (altes Verhalten)
+            level['base_price'] = None
+            level['entry_price'] = None
+            level['exit_price'] = None
+            self.log_message(
+                f"⚠️ Level {level.get('scenario_name')} L{level.get('level_num', 0)} recycled "
+                f"ohne Original-Preise (werden neu berechnet)",
+                "WARNING"
+            )
+
+        # Reset der Ausführungs-spezifischen Daten
         level['entry_fill_price'] = None
         level['entry_commission'] = None
         level['entry_time'] = None
