@@ -932,7 +932,12 @@ class TradingBotWidget(QWidget):
             'level': level.get('level_num', 0)
         }
 
+        # JSON Logs schreiben
         self._write_trade_to_logs(trade_data)
+
+        # Excel Trading Log schreiben
+        if hasattr(self, 'trading_log_exporter'):
+            self.trading_log_exporter.add_trade(trade_data)
 
         # Daily Stats
         self.daily_stats['realized_pnl'] += pnl
