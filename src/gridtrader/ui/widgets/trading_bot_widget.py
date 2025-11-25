@@ -802,22 +802,30 @@ class TradingBotWidget(QWidget):
 
             self.log_message(f"Order {broker_id}: {status}", "INFO")
 
-            # Bei Cancelled: Level-Tracking entfernen damit Order neu platziert werden kann
+            # Bei Cancelled: Level-Tracking entfernen und zurück zu Warten
             if status == 'Cancelled':
                 order_info = self.pending_orders[broker_id]
                 callback_id = order_info.get('callback_id')
+                level_data = order_info.get('level_data')
 
                 if callback_id and callback_id in self._order_callbacks:
                     cb_info = self._order_callbacks[callback_id]
                     unique_level_id = cb_info.get('unique_level_id')
+                    level = cb_info.get('level')
 
                     # Level-Schutz entfernen -> Level kann wieder getriggert werden
                     if unique_level_id:
                         self._orders_placed_for_levels.discard(unique_level_id)
-                        self.log_message(
-                            f"Order {broker_id} cancelled - Level {unique_level_id} kann neu getriggert werden",
-                            "WARNING"
-                        )
+
+                    # Level zurück zu waiting_levels hinzufügen (für ENTRY orders)
+                    if cb_info.get('type') == 'ENTRY' and level:
+                        if level not in self.waiting_levels:
+                            self.waiting_levels.append(level)
+                            self.update_waiting_levels_display()
+                            self.log_message(
+                                f"Order {broker_id} cancelled - Level zurück zu Warten",
+                                "WARNING"
+                            )
 
                     # Cleanup
                     del self._order_callbacks[callback_id]
@@ -2161,6 +2169,14 @@ class TradingBotWidget(QWidget):
             # Von hinten nach vorne löschen um Index-Probleme zu vermeiden
             for row in sorted(selected_rows, reverse=True):
                 if row < len(self.waiting_levels):
+                    level = self.waiting_levels[row]
+
+                    # Tracking entfernen damit Level bei Reaktivierung neu getriggert werden kann
+                    scenario_name = level.get('scenario_name', 'unknown')
+                    level_num = level.get('level_num', 0)
+                    unique_level_id = f"{scenario_name}_L{level_num}"
+                    self._orders_placed_for_levels.discard(unique_level_id)
+
                     del self.waiting_levels[row]
                     self.waiting_table.removeRow(row)
 
