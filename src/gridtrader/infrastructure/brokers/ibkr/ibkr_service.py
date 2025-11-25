@@ -43,7 +43,9 @@ import nest_asyncio
 nest_asyncio.apply()
 import threading
 import sys
-from typing import Dict, Optional, List, Set, Any
+from typing import Dict, Optional, List, Set, Any, Callable
+import pandas as pd
+import concurrent.futures
 from dataclasses import dataclass
 from decimal import Decimal
 from datetime import datetime
@@ -803,6 +805,141 @@ class IBKRService:
 
         except Exception as e:
             print(f"Account Info Fehler: {e}")
+
+    # ==================== Historical Data ====================
+
+    def get_historical_data(
+        self,
+        symbol: str,
+        duration: str = "30 D",
+        bar_size: str = "1 min",
+        what_to_show: str = "TRADES",
+        use_rth: bool = True,
+        timeout: float = 60.0
+    ) -> Optional[pd.DataFrame]:
+        """
+        Hole historische Daten synchron (aufgerufen vom Qt Thread oder Worker Thread).
+
+        BLOCKING - Wartet auf Ergebnis!
+
+        Args:
+            symbol: Aktien-Symbol (z.B. "AAPL")
+            duration: Zeitraum (z.B. "30 D", "1 W", "6 M")
+            bar_size: Kerzengröße (z.B. "1 min", "5 mins", "1 hour", "1 day")
+            what_to_show: Datentyp ("TRADES", "MIDPOINT", "BID", "ASK")
+            use_rth: Nur Regular Trading Hours
+            timeout: Timeout in Sekunden
+
+        Returns:
+            DataFrame mit OHLCV Daten oder None bei Fehler
+        """
+        if not self._loop or not self._loop.is_running():
+            print("ERROR: Event Loop nicht bereit für historische Daten")
+            return None
+
+        if not self._connected:
+            print("ERROR: Nicht verbunden für historische Daten")
+            return None
+
+        # Führe async Funktion im IB Thread aus und warte auf Ergebnis
+        future = concurrent.futures.Future()
+
+        def run_async():
+            asyncio.ensure_future(
+                self._do_get_historical_data(
+                    symbol, duration, bar_size, what_to_show, use_rth, future
+                ),
+                loop=self._loop
+            )
+
+        self._loop.call_soon_threadsafe(run_async)
+
+        try:
+            return future.result(timeout=timeout)
+        except concurrent.futures.TimeoutError:
+            print(f"Timeout beim Abruf historischer Daten für {symbol}")
+            return None
+        except Exception as e:
+            print(f"Fehler beim Abruf historischer Daten: {e}")
+            return None
+
+    async def _do_get_historical_data(
+        self,
+        symbol: str,
+        duration: str,
+        bar_size: str,
+        what_to_show: str,
+        use_rth: bool,
+        future: concurrent.futures.Future
+    ):
+        """Hole historische Daten (läuft im IB Thread)"""
+        try:
+            if not self._ib or not self._connected:
+                future.set_result(None)
+                return
+
+            print(f"Hole historische Daten: {symbol}, {duration}, {bar_size}...")
+
+            # Contract erstellen/aus Cache holen
+            if symbol in self._contracts:
+                contract = self._contracts[symbol]
+            else:
+                contract = Stock(symbol, 'SMART', 'USD')
+                qualified = await self._ib.qualifyContractsAsync(contract)
+                if qualified:
+                    contract = qualified[0]
+                    self._contracts[symbol] = contract
+                else:
+                    print(f"Contract für {symbol} nicht gefunden")
+                    future.set_result(None)
+                    return
+
+            # Historische Daten abrufen
+            bars = await self._ib.reqHistoricalDataAsync(
+                contract,
+                endDateTime='',
+                durationStr=duration,
+                barSizeSetting=bar_size,
+                whatToShow=what_to_show,
+                useRTH=use_rth,
+                formatDate=1
+            )
+
+            if not bars:
+                print(f"Keine historischen Daten für {symbol}")
+                future.set_result(None)
+                return
+
+            # Konvertiere zu DataFrame
+            data = []
+            for bar in bars:
+                data.append({
+                    'date': bar.date,
+                    'open': bar.open,
+                    'high': bar.high,
+                    'low': bar.low,
+                    'close': bar.close,
+                    'volume': bar.volume
+                })
+
+            df = pd.DataFrame(data)
+
+            # Setze date als Index
+            if 'date' in df.columns:
+                df['date'] = pd.to_datetime(df['date'])
+                df.set_index('date', inplace=True)
+
+            print(f"Historische Daten erhalten: {len(df)} Bars für {symbol}")
+            future.set_result(df)
+
+        except Exception as e:
+            print(f"Fehler beim Abruf historischer Daten für {symbol}: {e}")
+            traceback.print_exc()
+            future.set_result(None)
+
+    def get_event_loop(self) -> Optional[asyncio.AbstractEventLoop]:
+        """Hole den IB Event Loop (für Thread-safe async Aufrufe)"""
+        return self._loop
 
     # ==================== Query Methods (Thread-safe) ====================
 

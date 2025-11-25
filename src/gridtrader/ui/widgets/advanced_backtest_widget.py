@@ -16,10 +16,9 @@ import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 from typing import Dict, List, Tuple
-import asyncio
 import pickle
 from pathlib import Path
-# NOTE: IBKR Adapter wird dynamisch importiert via get_shared_adapter()
+# NOTE: IBKRService wird dynamisch importiert in DataFetcher.fetch_historical_data()
 
 
 class BacktestWorker(QThread):
@@ -476,7 +475,7 @@ class BacktestWorker(QThread):
 
 
 class DataFetcher(QThread):
-    """Worker Thread für Daten-Abruf"""
+    """Worker Thread für Daten-Abruf - verwendet IBKRService"""
     progress_update = Signal(str)
     data_ready = Signal(object)
     error_occurred = Signal(str)
@@ -488,170 +487,134 @@ class DataFetcher(QThread):
         self.timeframe_days = timeframe_days
         self.candle_minutes = candle_minutes
         self.use_cache_response = False  # Wird vom Main-Thread gesetzt
-        
+
     def run(self):
-        """Hole historische Daten - THREAD-SAFE mit IB Event Loop"""
+        """Hole historische Daten über IBKRService"""
         try:
-            # Hole Shared Adapter
-            from gridtrader.infrastructure.brokers.ibkr import get_shared_adapter
-            adapter = get_shared_adapter()
-
-            if adapter is None:
-                self.error_occurred.emit("❌ Keine IBKR Verbindung! Bitte erst im Live Trading Tab verbinden.")
-                return
-
-            # Hole den Event Loop vom Adapter (gespeichert bei connect())
-            if not hasattr(adapter, 'event_loop') or adapter.event_loop is None:
-                self.error_occurred.emit("❌ IB Event Loop nicht verfügbar! Adapter hat keinen Event Loop.")
-                return
-
-            ib_loop = adapter.event_loop
-
-            if ib_loop.is_closed():
-                self.error_occurred.emit("❌ IB Event Loop ist geschlossen!")
-                return
-
-            # Führe async Funktion im RICHTIGEN Event Loop aus (thread-safe)
-            future = asyncio.run_coroutine_threadsafe(
-                self.fetch_historical_data(),
-                ib_loop
-            )
-
-            # Warte auf Ergebnis (mit Timeout)
-            data = future.result(timeout=60)  # Max 60 Sekunden
+            data = self.fetch_historical_data()
 
             if data is not None:
                 self.data_ready.emit(data)
             else:
                 self.error_occurred.emit("Keine Daten erhalten")
 
-        except TimeoutError:
-            self.error_occurred.emit("⏱️ Timeout beim Datenabruf (60s überschritten)")
         except Exception as e:
             import traceback
             error_details = traceback.format_exc()
             self.error_occurred.emit(f"❌ Fehler beim Datenabruf: {str(e)}")
             print(f"DEBUG Error Details:\n{error_details}")
-    
-    async def fetch_historical_data(self):
-        """Hole historische Daten von IBKR oder Cache - mit intelligentem Caching"""
+
+    def fetch_historical_data(self):
+        """Hole historische Daten von IBKR oder Cache - verwendet IBKRService"""
+        import time
+
+        # Cache-Pfad konstruieren
+        cache_dir = Path("cache")
+        cache_dir.mkdir(exist_ok=True)
+
+        # Cache-Dateiname-Pattern
+        cache_pattern = f"{self.symbol}_{self.timeframe_days}d_{self.candle_minutes}min_*.pkl"
+        existing_caches = sorted(cache_dir.glob(cache_pattern))
+
+        # Prüfe ob frischer Cache existiert
+        if existing_caches:
+            newest_cache = existing_caches[-1]
+            cache_age_hours = (datetime.now() - datetime.fromtimestamp(newest_cache.stat().st_mtime)).total_seconds() / 3600
+
+            if cache_age_hours < 24:
+                # Cache ist frisch genug
+                self.progress_update.emit(f"📦 Cache gefunden: {newest_cache.name} ({cache_age_hours:.1f}h alt)")
+
+                # Signal senden - Main-Thread fragt User
+                self.ask_use_cache.emit(newest_cache.name, cache_age_hours)
+
+                # Kurz warten damit Main-Thread Zeit hat zu antworten
+                time.sleep(0.5)
+
+                if self.use_cache_response:
+                    # Cache verwenden
+                    self.progress_update.emit(f"📦 Lade aus Cache...")
+                    with open(newest_cache, 'rb') as f:
+                        data = pickle.load(f)
+                    self.progress_update.emit(f"✅ {len(data)} Datenpunkte aus Cache geladen!")
+                    return data
+
+        # Kein Cache oder User will neu laden - hole von IBKR
+        self.progress_update.emit(f"📊 Hole historische Daten für {self.symbol}...")
+
+        # Hole IBKRService (verwendet bestehende Verbindung vom Live Trading Tab)
         try:
-            # Cache-Pfad konstruieren
-            cache_dir = Path("cache")
-            cache_dir.mkdir(exist_ok=True)
+            from gridtrader.infrastructure.brokers.ibkr.ibkr_service import get_ibkr_service
+            service = get_ibkr_service()
+        except ImportError:
+            self.error_occurred.emit("❌ IBKRService nicht verfügbar!")
+            return self._try_fallback_cache(existing_caches)
 
-            # Cache-Dateiname-Pattern
-            cache_pattern = f"{self.symbol}_{self.timeframe_days}d_{self.candle_minutes}min_*.pkl"
-            existing_caches = sorted(cache_dir.glob(cache_pattern))
-
-            # Prüfe ob frischer Cache existiert
+        # Check ob Service verbunden ist
+        if not service.is_connected():
+            # IBKR nicht verbunden - nutze neuesten Cache falls vorhanden
             if existing_caches:
-                newest_cache = existing_caches[-1]
-                cache_age_hours = (datetime.now() - datetime.fromtimestamp(newest_cache.stat().st_mtime)).total_seconds() / 3600
-
-                if cache_age_hours < 24:
-                    # Cache ist frisch genug
-                    self.progress_update.emit(f"📦 Cache gefunden: {newest_cache.name} ({cache_age_hours:.1f}h alt)")
-
-                    # Signal senden - Main-Thread fragt User
-                    self.ask_use_cache.emit(newest_cache.name, cache_age_hours)
-
-                    # Kurz warten damit Main-Thread Zeit hat zu antworten
-                    await asyncio.sleep(0.5)
-
-                    if self.use_cache_response:
-                        # Cache verwenden
-                        self.progress_update.emit(f"📦 Lade aus Cache...")
-                        with open(newest_cache, 'rb') as f:
-                            data = pickle.load(f)
-                        self.progress_update.emit(f"✅ {len(data)} Datenpunkte aus Cache geladen!")
-                        return data
-
-            # Kein Cache oder User will neu laden - hole von IBKR
-            self.progress_update.emit(f"📊 Hole historische Daten für {self.symbol}...")
-
-            # Nutze EXISTING Shared Adapter vom Live Trading Tab
-            from gridtrader.infrastructure.brokers.ibkr import get_shared_adapter
-
-            adapter = get_shared_adapter()
-
-            # Check ob Verbindung existiert
-            if adapter is None:
-                # IBKR nicht verfügbar - nutze neuesten Cache falls vorhanden
-                if existing_caches:
-                    self.progress_update.emit("⚠️ IBKR nicht verfügbar - nutze letzten Cache")
-                    with open(existing_caches[-1], 'rb') as f:
-                        data = pickle.load(f)
-                    self.progress_update.emit(f"✅ {len(data)} Datenpunkte aus Fallback-Cache")
-                    return data
-                error_msg = "❌ Keine IBKR Verbindung! Bitte erst im Live Trading Tab verbinden."
-                self.error_occurred.emit(error_msg)
-                return None
-
-            if not adapter.is_connected():
-                # IBKR nicht verbunden - nutze neuesten Cache falls vorhanden
-                if existing_caches:
-                    self.progress_update.emit("⚠️ IBKR nicht verbunden - nutze letzten Cache")
-                    with open(existing_caches[-1], 'rb') as f:
-                        data = pickle.load(f)
-                    self.progress_update.emit(f"✅ {len(data)} Datenpunkte aus Fallback-Cache")
-                    return data
-                error_msg = "❌ IBKR Verbindung nicht aktiv! Bitte im Live Trading Tab neu verbinden."
-                self.error_occurred.emit(error_msg)
-                return None
-
-            self.progress_update.emit(f"♻️ Nutze existierende IBKR Verbindung...")
-
-            # Hole Daten von EXISTING Connection mit allen IBKR Parametern
-            # IBKR Format: "1 min" (ohne 's') aber "2 mins", "3 mins", etc. (mit 's')
-            bar_size = "1 min" if self.candle_minutes == 1 else f"{self.candle_minutes} mins"
-
-            self.progress_update.emit(f"🔄 Anfrage: {self.symbol}, {self.timeframe_days}D, {bar_size}...")
-
-            df = await adapter.get_historical_data(
-                symbol=self.symbol,
-                duration=f"{self.timeframe_days} D",
-                bar_size=bar_size,
-                what_to_show="TRADES",
-                use_rth=True
-            )
-
-            if df is None:
-                self.error_occurred.emit(f"⚠️ get_historical_data gab None zurück für {self.symbol}")
-                return None
-
-            if df.empty:
-                self.error_occurred.emit(f"⚠️ Leeres DataFrame für {self.symbol} erhalten")
-                return None
-
-            # Speichere in Cache
-            cache_file = cache_dir / f"{self.symbol}_{self.timeframe_days}d_{self.candle_minutes}min_{datetime.now():%Y%m%d}.pkl"
-            with open(cache_file, 'wb') as f:
-                pickle.dump(df, f)
-            self.progress_update.emit(f"💾 Cache gespeichert: {cache_file.name}")
-
-            # Cleanup alte Cache-Dateien
-            self._cleanup_old_cache(cache_dir, days=7)
-
-            self.progress_update.emit(f"✅ {len(df)} Datenpunkte erfolgreich geladen!")
-            return df
-
-        except ConnectionError as ce:
-            # Bei Verbindungsfehler: Nutze neuesten Cache
-            if existing_caches:
-                self.progress_update.emit(f"⚠️ Verbindungsfehler - nutze Cache")
+                self.progress_update.emit("⚠️ IBKR nicht verbunden - nutze letzten Cache")
                 with open(existing_caches[-1], 'rb') as f:
                     data = pickle.load(f)
                 self.progress_update.emit(f"✅ {len(data)} Datenpunkte aus Fallback-Cache")
                 return data
-            self.error_occurred.emit(f"❌ Verbindungsfehler: {str(ce)}")
+            self.error_occurred.emit("❌ Keine IBKR Verbindung! Bitte erst im Live Trading Tab verbinden.")
             return None
-        except Exception as e:
-            import traceback
-            error_details = traceback.format_exc()
-            self.error_occurred.emit(f"❌ Fehler beim Datenabruf: {str(e)}")
-            print(f"DEBUG Error: {error_details}")  # Für Debugging
+
+        self.progress_update.emit(f"♻️ Nutze existierende IBKR Verbindung...")
+
+        # Hole Daten von IBKRService
+        # IBKR Format: "1 min" (ohne 's') aber "2 mins", "3 mins", etc. (mit 's')
+        bar_size = "1 min" if self.candle_minutes == 1 else f"{self.candle_minutes} mins"
+
+        self.progress_update.emit(f"🔄 Anfrage: {self.symbol}, {self.timeframe_days}D, {bar_size}...")
+
+        df = service.get_historical_data(
+            symbol=self.symbol,
+            duration=f"{self.timeframe_days} D",
+            bar_size=bar_size,
+            what_to_show="TRADES",
+            use_rth=True,
+            timeout=60.0
+        )
+
+        if df is None:
+            # IBKR-Abruf fehlgeschlagen - nutze neuesten Cache falls vorhanden
+            if existing_caches:
+                self.progress_update.emit("⚠️ IBKR Abruf fehlgeschlagen - nutze letzten Cache")
+                with open(existing_caches[-1], 'rb') as f:
+                    data = pickle.load(f)
+                self.progress_update.emit(f"✅ {len(data)} Datenpunkte aus Fallback-Cache")
+                return data
+            self.error_occurred.emit(f"⚠️ get_historical_data gab None zurück für {self.symbol}")
             return None
+
+        if df.empty:
+            self.error_occurred.emit(f"⚠️ Leeres DataFrame für {self.symbol} erhalten")
+            return None
+
+        # Speichere in Cache
+        cache_file = cache_dir / f"{self.symbol}_{self.timeframe_days}d_{self.candle_minutes}min_{datetime.now():%Y%m%d}.pkl"
+        with open(cache_file, 'wb') as f:
+            pickle.dump(df, f)
+        self.progress_update.emit(f"💾 Cache gespeichert: {cache_file.name}")
+
+        # Cleanup alte Cache-Dateien
+        self._cleanup_old_cache(cache_dir, days=7)
+
+        self.progress_update.emit(f"✅ {len(df)} Datenpunkte erfolgreich geladen!")
+        return df
+
+    def _try_fallback_cache(self, existing_caches):
+        """Versuche Cache zu laden wenn IBKR nicht verfügbar"""
+        if existing_caches:
+            self.progress_update.emit("⚠️ IBKR nicht verfügbar - nutze letzten Cache")
+            with open(existing_caches[-1], 'rb') as f:
+                data = pickle.load(f)
+            self.progress_update.emit(f"✅ {len(data)} Datenpunkte aus Fallback-Cache")
+            return data
+        return None
 
     def _cleanup_old_cache(self, cache_dir: Path, days: int = 7):
         """Löscht alte Cache-Dateien"""
