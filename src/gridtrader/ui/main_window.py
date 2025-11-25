@@ -276,57 +276,102 @@ class MainWindow(QMainWindow):
         if not hasattr(self, 'dashboard_trades_table'):
             return
 
-        # Add to list (most recent first)
-        self.dashboard_trades.insert(0, trade_data)
+        # Add to list
+        self.dashboard_trades.append(trade_data)
 
         # Limit to 100 trades
         if len(self.dashboard_trades) > 100:
-            self.dashboard_trades = self.dashboard_trades[:100]
+            self.dashboard_trades = self.dashboard_trades[-100:]
+
+        # Sortiere nach Level-Name (primär) und Zeit (sekundär)
+        # So werden Entry/Exit eines Levels zusammen angezeigt
+        def sort_key(trade):
+            level = trade.get('level', 'ZZZ')  # ZZZ für Trades ohne Level am Ende
+            timestamp = trade.get('timestamp', '')
+            # Sortiere nach Level-Name aufsteigend, dann nach Zeit aufsteigend
+            return (level, timestamp)
+
+        sorted_trades = sorted(self.dashboard_trades, key=sort_key)
 
         # Update table
-        self.dashboard_trades_table.setRowCount(len(self.dashboard_trades))
+        self.dashboard_trades_table.setRowCount(len(sorted_trades))
 
-        for row, trade in enumerate(self.dashboard_trades):
+        # Hintergrundfarben für Level-Gruppen (abwechselnd für bessere Sichtbarkeit)
+        level_colors = {}
+        color_index = 0
+        bg_colors = [
+            QColor(255, 255, 255),  # Weiß
+            QColor(240, 248, 255),  # Hellblau (AliceBlue)
+        ]
+
+        for row, trade in enumerate(sorted_trades):
+            level_name = trade.get('level', 'N/A')
+
+            # Hintergrundfarbe für Level-Gruppe bestimmen
+            if level_name not in level_colors:
+                level_colors[level_name] = bg_colors[color_index % len(bg_colors)]
+                color_index += 1
+            row_bg_color = level_colors[level_name]
+
             # Zeit
             timestamp = trade.get('timestamp', datetime.now().strftime('%H:%M:%S'))
             if isinstance(timestamp, str) and 'T' in timestamp:
                 timestamp = timestamp.split('T')[1][:8]
-            self.dashboard_trades_table.setItem(row, 0, QTableWidgetItem(str(timestamp)))
+            time_item = QTableWidgetItem(str(timestamp))
+            time_item.setBackground(row_bg_color)
+            self.dashboard_trades_table.setItem(row, 0, time_item)
 
             # Symbol
-            self.dashboard_trades_table.setItem(row, 1, QTableWidgetItem(trade.get('symbol', 'N/A')))
+            symbol_item = QTableWidgetItem(trade.get('symbol', 'N/A'))
+            symbol_item.setBackground(row_bg_color)
+            self.dashboard_trades_table.setItem(row, 1, symbol_item)
 
             # Level (Scenario + Level Nummer)
-            level_name = trade.get('level', 'N/A')
-            self.dashboard_trades_table.setItem(row, 2, QTableWidgetItem(level_name))
+            level_item = QTableWidgetItem(level_name)
+            level_item.setBackground(row_bg_color)
+            # Level fett darstellen
+            font = level_item.font()
+            font.setBold(True)
+            level_item.setFont(font)
+            self.dashboard_trades_table.setItem(row, 2, level_item)
 
             # Typ (LONG/SHORT) mit Farbe
             trade_type = trade.get('type', 'N/A')
             type_item = QTableWidgetItem(trade_type)
             type_item.setForeground(QColor(0, 128, 0) if trade_type == 'LONG' else QColor(200, 0, 0))
+            type_item.setBackground(row_bg_color)
             self.dashboard_trades_table.setItem(row, 3, type_item)
 
             # Side (Buy/Sell) mit Farbe
             side = trade.get('side', 'N/A')
             side_item = QTableWidgetItem(side)
             side_item.setForeground(QColor(0, 128, 0) if side == 'BUY' else QColor(200, 0, 0))
+            side_item.setBackground(row_bg_color)
             self.dashboard_trades_table.setItem(row, 4, side_item)
 
             # Anzahl Aktien
             shares = trade.get('shares', 0)
-            self.dashboard_trades_table.setItem(row, 5, QTableWidgetItem(str(shares)))
+            shares_item = QTableWidgetItem(str(shares))
+            shares_item.setBackground(row_bg_color)
+            self.dashboard_trades_table.setItem(row, 5, shares_item)
 
             # Preis
             price = trade.get('price', 0)
-            self.dashboard_trades_table.setItem(row, 6, QTableWidgetItem(f"${price:.2f}"))
+            price_item = QTableWidgetItem(f"${price:.2f}")
+            price_item.setBackground(row_bg_color)
+            self.dashboard_trades_table.setItem(row, 6, price_item)
 
             # Total (shares * price)
             total = trade.get('total', shares * price)
-            self.dashboard_trades_table.setItem(row, 7, QTableWidgetItem(f"${total:.2f}"))
+            total_item = QTableWidgetItem(f"${total:.2f}")
+            total_item.setBackground(row_bg_color)
+            self.dashboard_trades_table.setItem(row, 7, total_item)
 
             # Kommission
             commission = trade.get('commission', 0)
-            self.dashboard_trades_table.setItem(row, 8, QTableWidgetItem(f"${commission:.2f}"))
+            comm_item = QTableWidgetItem(f"${commission:.2f}")
+            comm_item.setBackground(row_bg_color)
+            self.dashboard_trades_table.setItem(row, 8, comm_item)
         
     def _create_analyse(self):
         analyse = QWidget()
