@@ -30,15 +30,11 @@ except ImportError:
 # IBKR imports (optional)
 try:
     from gridtrader.infrastructure.brokers.ibkr.ibkr_adapter import IBKRBrokerAdapter, IBKRConfig
-    from gridtrader.infrastructure.brokers.ibkr import get_shared_adapter
-    from gridtrader.infrastructure.brokers.ibkr.shared_connection import shared_connection
-    # NEU: IBKRService für Event-basierte Architektur
+    # NUR IBKRService verwenden - KEINE shared_connection mehr!
     from gridtrader.infrastructure.brokers.ibkr.ibkr_service import get_ibkr_service, IBKRService
     IBKR_AVAILABLE = True
 except ImportError:
     IBKR_AVAILABLE = False
-    get_shared_adapter = lambda: None
-    shared_connection = None
     get_ibkr_service = None
     IBKRService = None
 
@@ -245,10 +241,9 @@ class TradingBotWidget(QWidget):
 
         if IBKR_AVAILABLE:
             self.log_message("IBKR-Integration verfügbar", "INFO")
-            # NEU: Initialisiere IBKRService (Event-basierte Architektur)
+            # NUR IBKRService verwenden (Event-basierte Architektur)
             self._setup_ibkr_service()
-            # Starte Connection Check Timer (für Legacy-Kompatibilität)
-            self._start_connection_check_timer()
+            # KEIN Legacy-Timer mehr! Market Data kommt per Push via IBKRService
         else:
             self.log_message("IBKR nicht verfügbar - pip install ib_insync", "WARNING")
 
@@ -2312,75 +2307,8 @@ class TradingBotWidget(QWidget):
         """Gibt Anzahl der verfügbaren Szenarien zurück"""
         return len(self.available_scenarios)
 
-    # ========== IBKR INTEGRATION (Shared Connection) ==========
-
-    def _start_connection_check_timer(self):
-        """Starte Timer der die Shared Connection prüft"""
-        if self.connection_check_timer:
-            self.connection_check_timer.stop()
-
-        self.connection_check_timer = QTimer()
-        self.connection_check_timer.timeout.connect(self._check_shared_connection)
-        self.connection_check_timer.start(2000)  # Alle 2 Sekunden prüfen
-
-    def _check_shared_connection(self):
-        """
-        Prüfe ob IBKR Connection verfügbar ist
-
-        WICHTIG: Verwendet NUR den IBKRService!
-        Der Legacy-Adapter wird NICHT mehr verwendet um Blockierungen zu vermeiden.
-        """
-        # NUR IBKRService verwenden (Event-basiert, non-blocking)
-        if self._ibkr_service:
-            if self._ibkr_service.is_connected():
-                # Verbunden!
-                if not self._service_connected:
-                    self.ibkr_status_label.setText("Verbunden (Service)")
-                    self.ibkr_status_label.setStyleSheet("font-size: 12px; font-weight: bold; color: #0a0;")
-                    self.live_trading_cb.setEnabled(True)
-                    self._service_connected = True
-                    self.log_message("IBKRService verbunden (Event-basiert)", "SUCCESS")
-
-                    # WICHTIG: Stoppe Legacy-Timer falls laufend
-                    if self.market_data_timer:
-                        self.market_data_timer.stop()
-                        self.market_data_timer = None
-
-                    # Subscribiere Symbole für alle aktiven Levels
-                    self._subscribe_active_symbols()
-            else:
-                # Nicht verbunden - warte auf Verbindung im Live Data Tab
-                if self._service_connected:
-                    self.ibkr_status_label.setText("Nicht verbunden")
-                    self.ibkr_status_label.setStyleSheet("font-size: 12px; font-weight: bold; color: #c00;")
-                    self.live_trading_cb.setEnabled(False)
-                    self.live_trading_cb.setChecked(False)
-                    self.live_trading_enabled = False
-                    self._service_connected = False
-                    self.log_message("IBKRService getrennt", "WARNING")
-
-                    # Stoppe Legacy-Timer falls laufend
-                    if self.market_data_timer:
-                        self.market_data_timer.stop()
-                        self.market_data_timer = None
-            return
-
-        # Kein IBKRService verfügbar - zeige Warnung
-        if self.ibkr_status_label.text() != "Service nicht verfügbar":
-            self.ibkr_status_label.setText("Service nicht verfügbar")
-            self.ibkr_status_label.setStyleSheet("font-size: 12px; font-weight: bold; color: #c00;")
-            self.live_trading_cb.setEnabled(False)
-            # WICHTIG: Legacy-Adapter NICHT verwenden (blockiert!)
-            if self.market_data_timer:
-                self.market_data_timer.stop()
-                self.market_data_timer = None
-
-    def _get_shared_adapter(self) -> Optional[IBKRBrokerAdapter]:
-        """Hole den Shared IBKR Adapter"""
-        adapter = get_shared_adapter()
-        if adapter and adapter.is_connected():
-            return adapter
-        return None
+    # ========== IBKR INTEGRATION (NUR IBKRService!) ==========
+    # KEINE Legacy-Adapter mehr! Alles über IBKRService Signals.
 
     def is_market_open(self) -> bool:
         """
@@ -2489,177 +2417,23 @@ class TradingBotWidget(QWidget):
                 self.log_message("Order Status Checker gestoppt", "INFO")
 
     def _on_refresh_rate_changed(self):
-        """Update Timer wenn Rate geändert wird"""
-        if self.market_data_timer and self.market_data_timer.isActive():
-            interval = int(self.refresh_rate_spin.value() * 1000)
-            self.market_data_timer.setInterval(interval)
-            self.log_message(f"Market Data Refresh auf {self.refresh_rate_spin.value()}s geändert", "INFO")
-        
-    
+        """Update Timer wenn Rate geändert wird - NICHT MEHR VERWENDET"""
+        # Legacy - Market Data kommt jetzt per Push via IBKRService
+        pass
+
     def _start_market_data_timer(self):
-        """
-        Starte Timer für Market Data Updates (LEGACY MODE)
-
-        WICHTIG: Diese Methode sollte NICHT mehr aufgerufen werden wenn
-        IBKRService verwendet wird. Market Data kommt dann per Push.
-        """
-        # GUARD: Starte NIE den Legacy-Timer wenn IBKRService verfügbar ist
-        if self._ibkr_service:
-            print("DEBUG BOT: Legacy timer NOT started - IBKRService is available")
-            return
-
-        print("DEBUG BOT: Starting LEGACY market data timer (no IBKRService)")
-
-        if self.market_data_timer:
-            self.market_data_timer.stop()
-
-        self.market_data_timer = QTimer()
-        self.market_data_timer.timeout.connect(self._update_market_data)
-        interval = int(self.refresh_rate_spin.value() * 1000) if hasattr(self, 'refresh_rate_spin') else 2000
-        self.market_data_timer.start(interval)
-
-        print(f"DEBUG BOT: LEGACY market data timer started with interval {interval}ms")
+        """LEGACY - NICHT MEHR VERWENDEN! Market Data kommt per Push via IBKRService."""
+        print("DEBUG BOT: _start_market_data_timer IGNORIERT - IBKRService wird verwendet")
+        # Starte KEINEN Timer - alles über IBKRService Signals!
 
     def _update_market_data(self):
-        """
-        Update Market Data für alle aktiven Levels (LEGACY MODE)
+        """LEGACY - NICHT MEHR VERWENDEN! Market Data kommt per Push via IBKRService."""
+        # Diese Methode sollte nie aufgerufen werden
+        print("DEBUG BOT: _update_market_data IGNORIERT - IBKRService wird verwendet")
 
-        WICHTIG: Diese Methode wird NUR im Legacy-Modus verwendet!
-        Wenn IBKRService aktiv ist, kommen die Daten per Push über
-        _on_market_data_update() und diese Methode wird übersprungen.
-        """
-        # WICHTIG: Skip wenn IBKRService verbunden (Daten kommen per Push!)
-        if self._ibkr_service and self._service_connected:
-            # Im Service-Modus: Timer sollte gar nicht laufen
-            if self.market_data_timer and self.market_data_timer.isActive():
-                print("DEBUG BOT: Stopping legacy timer - IBKRService is active")
-                self.market_data_timer.stop()
-                self.market_data_timer = None
-            return
-
-        adapter = self._get_shared_adapter()
-        if not adapter:
-            return
-
-        # Sammle alle einzigartigen Symbole
-        symbols = set()
-        for level in self.waiting_levels:
-            symbols.add(level['symbol'])
-        for level in self.active_levels:
-            symbols.add(level.get('symbol', ''))
-
-        if not symbols:
-            return
-
-        # DEBUG: Fügen Sie diese Zeile hinzu!
-        print(f"DEBUG BOT: _update_market_data called with symbols: {symbols}")
-
-        # Starte asynchronen Update
-        try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                asyncio.ensure_future(self._async_update_market_data(adapter, list(symbols)))
-            else:
-                loop.run_until_complete(self._async_update_market_data(adapter, list(symbols)))
-        except Exception as e:
-            self.log_message(f"Market Data Update Fehler: {e}", "ERROR")
-
-    async def _async_update_market_data(self, adapter: IBKRBrokerAdapter, symbols: List[str]):
-        """Asynchrones Market Data Update"""
-        print(f"DEBUG BOT: _async_update_market_data START with symbols: {symbols}")
-        print(f"DEBUG BOT: Number of waiting levels: {len(self.waiting_levels)}")
-
-        try:
-            # Hole Marktdaten für alle Symbole
-            market_data = {}
-            for symbol in symbols:
-                try:
-                    data = await adapter.get_market_data(symbol)
-                    print(f"DEBUG BOT: Got market data for {symbol}: {data}")
-                    # Speichere vollständige Preisdaten (bid, ask, last)
-                    if data and isinstance(data, dict):
-                        bid = data.get('bid', 0)
-                        ask = data.get('ask', 0)
-                        last = data.get('last', 0) or data.get('close', 0)
-
-                        # Speichere als Dictionary mit allen Preisen
-                        market_data[symbol] = {
-                            'bid': bid,
-                            'ask': ask,
-                            'last': last,
-                            # Für Kompatibilität: mid-price als Fallback
-                            'mid': (bid + ask) / 2 if bid and ask else last
-                        }
-                        print(f"DEBUG BOT: Stored prices for {symbol}: bid={bid}, ask={ask}, last={last}")
-                    elif data:
-                        # Handle case where data is not a dict (e.g., string error message)
-                        print(f"DEBUG BOT: Unexpected data type for {symbol}: {type(data)} - {data}")
-                except Exception as e:
-                    print(f"DEBUG BOT: Error getting market data for {symbol}: {e}")
-                    self.log_message(f"Marktdaten-Fehler {symbol}: {e}", "WARNING")
-
-            if not market_data:
-                print("DEBUG BOT: No market data received, returning")
-                return
-
-            # Speichere aktuelle Marktpreise für Waiting Table (nur last price für Anzeige)
-            for sym, prices in market_data.items():
-                self._last_market_prices[sym] = prices['last']
-            print(f"DEBUG BOT: Updated market prices cache: {self._last_market_prices}")
-
-            # Update Basis-Preise für wartende Levels ohne Preis
-            print(f"DEBUG BOT: Checking {len(self.waiting_levels)} waiting levels for price updates")
-            levels_updated = []
-            for i, level in enumerate(self.waiting_levels):
-                print(f"DEBUG BOT: Level {i}: symbol={level.get('symbol')}, base_price={level.get('base_price')}")
-
-                if level.get('base_price') is None and level['symbol'] in market_data:
-                    # Setze Basis-Preis mit aktuellem Marktpreis (last)
-                    current_price = market_data[level['symbol']]['last']
-                    level['base_price'] = current_price
-
-                    # Berechne Entry und Exit Preise
-                    entry_pct = level['entry_pct']
-                    exit_pct = level['exit_pct']
-
-                    level['entry_price'] = current_price * (1 + entry_pct / 100)
-                    level['exit_price'] = level['entry_price'] * (1 + exit_pct / 100)
-
-                    print(f"DEBUG BOT: Updated level {i} with base_price={current_price}, entry={level['entry_price']}, exit={level['exit_price']}")
-
-                    self.log_message(
-                        f"📈 Level {level.get('scenario_name')} initialisiert mit Marktpreis ${current_price:.2f}",
-                        "INFO"
-                    )
-
-                    levels_updated.append(level['symbol'])
-
-            # Update Table Display für alle betroffenen Symbole
-            if levels_updated:
-                # Aktualisiere nur die geänderten Symbole
-                for symbol in set(levels_updated):
-                    self._update_waiting_table_prices(symbol)
-            else:
-                # Aktualisiere alle mit aktuellen Marktdaten (für Differenz-Berechnung)
-                self._update_waiting_table_prices()
-
-
-
-            # Verarbeite Waiting Levels (Entry Check)
-            print("DEBUG BOT: Calling _check_entry_conditions")
-            await self._check_entry_conditions(market_data)
-            print("DEBUG BOT: Calling _check_exit_conditions")
-            # Verarbeite Active Levels (P&L Update + Exit Check)
-            await self._check_exit_conditions(market_data)
-            print("DEBUG BOT: _async_update_market_data COMPLETED")
-
-        except Exception as e:
-            print(f"DEBUG BOT: EXCEPTION in _async_update_market_data: {e}")
-            import traceback
-            traceback.print_exc()
-                     
-           
-            self.log_message(f"Async Market Update Fehler: {e}", "ERROR")
+    async def _async_update_market_data(self, adapter, symbols: List[str]):
+        """LEGACY - NICHT MEHR VERWENDEN! Market Data kommt per Push via IBKRService."""
+        print("DEBUG BOT: _async_update_market_data IGNORIERT - IBKRService wird verwendet")
 
     async def _check_entry_conditions(self, market_data: Dict[str, dict]):
         """Prüfe Entry-Bedingungen für wartende Levels
