@@ -1,8 +1,8 @@
-# GridTrader V3.0
+# GridTrader V4.0
 
 <div align="center">
   <h3>Professional Grid Trading Software mit IBKR Integration</h3>
-  <p>Vollständige Neuentwicklung mit moderner Architektur</p>
+  <p>Version mit funktionierenden Limit-Orders und angepasster Architektur</p>
 </div>
 
 ---
