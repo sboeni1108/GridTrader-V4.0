@@ -267,17 +267,16 @@ class IBKRService:
         """
         Hintergrund-Task der IB Events verarbeitet
 
-        WICHTIG: Muss regelmäßig yielden damit call_soon_threadsafe() Callbacks
-        ausgeführt werden können!
+        WICHTIG: Bei connectAsync() verarbeitet ib_insync Events automatisch
+        über den asyncio Event Loop. Wir müssen nur regelmäßig yielden damit
+        call_soon_threadsafe() Callbacks ausgeführt werden können.
+
+        NICHT ib.sleep() verwenden - das verursacht "event loop already running"!
         """
         while self._running:
             try:
-                if self._ib and self._connected and self._ib.isConnected():
-                    # IB Events verarbeiten - nur pending Events, nicht blockieren!
-                    self._ib.sleep(0)  # 0 = nur pending Events verarbeiten
-
-                # KRITISCH: Yield zum Event Loop damit Callbacks laufen können!
-                # Ohne dieses await werden call_soon_threadsafe() Callbacks nie ausgeführt
+                # Yield zum Event Loop - ib_insync verarbeitet Events automatisch
+                # bei async Verbindung (connectAsync)
                 await asyncio.sleep(0.01)
 
             except asyncio.CancelledError:
@@ -647,9 +646,10 @@ class IBKRService:
             print(f">>> placeOrder() zurückgekehrt, orderId={trade.order.orderId}")
 
             # Warte auf initiale Bestätigung (max 2 Sekunden)
+            # WICHTIG: await asyncio.sleep() statt ib.sleep() verwenden!
             print(">>> Warte auf Order-Bestätigung...")
             for i in range(20):
-                self._ib.sleep(0.1)
+                await asyncio.sleep(0.1)  # NICHT ib.sleep() - verursacht "loop already running"
                 status = trade.orderStatus.status
                 if status not in ['PendingSubmit', '']:
                     print(f">>> Status nach {i*0.1:.1f}s: {status}")
