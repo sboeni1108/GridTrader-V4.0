@@ -2780,12 +2780,12 @@ class TradingBotWidget(QWidget):
         # Platziere Order (simuliert oder echt)
         # Bei Limit-Orders: setze Limit auf theoretischen Entry-Preis
         if self.limit_order_rb.isChecked():
-            order_result = await self.place_ibkr_order(
+            order_result = self.place_ibkr_order(
                 symbol, side, shares, "LIMIT", theoretical_entry, level_name,
                 level_data=level  # Übergebe vollständige Level-Daten!
             )
         else:
-            order_result = await self.place_ibkr_order(
+            order_result = self.place_ibkr_order(
                 symbol, side, shares, "MARKET", None, level_name,
                 level_data=level  # Übergebe vollständige Level-Daten!
             )
@@ -3137,12 +3137,12 @@ class TradingBotWidget(QWidget):
         # Bei Limit-Orders: setze Limit auf berechneten Exit-Preis
         if self.limit_order_rb.isChecked():
             target_exit = level['exit_price']  # Der berechnete Exit-Preis
-            order_result = await self.place_ibkr_order(
+            order_result = self.place_ibkr_order(
                 symbol, side, shares, "LIMIT", target_exit, level_name,
                 level_data=exit_level_data  # FIX: Übergebe Level-Daten!
             )
         else:
-            order_result = await self.place_ibkr_order(
+            order_result = self.place_ibkr_order(
                 symbol, side, shares, "MARKET", None, level_name,
                 level_data=exit_level_data  # FIX: Übergebe Level-Daten!
             )
@@ -3334,7 +3334,7 @@ class TradingBotWidget(QWidget):
             return None
 
     # Legacy async method - redirects to service method
-    async def place_ibkr_order(self, symbol: str, side: str, quantity: int, order_type: str = "MARKET", limit_price: float = None, level_name: str = "Manual", level_data: dict = None):
+    def place_ibkr_order(self, symbol: str, side: str, quantity: int, order_type: str = "MARKET", limit_price: float = None, level_name: str = "Manual", level_data: dict = None):
         """
         LEGACY - Redirects to IBKRService
 
