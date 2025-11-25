@@ -213,6 +213,10 @@ class TradingBotWidget(QWidget):
         # Guard gegen doppeltes Trade-Logging (Trade-ID = "symbol_timestamp_shares")
         self._logged_trades: set = set()
 
+        # FIX: Pending Exit Trades für nachträgliche Kommissions-Updates
+        # Key: exit_order_id, Value: trade_data dict
+        self._pending_exit_trades: Dict[str, dict] = {}
+
         # IBKR Connection (verwendet Shared Connection vom Live Trading Tab)
         self.live_trading_enabled = False
         self.market_data_timer: Optional[QTimer] = None
@@ -330,6 +334,50 @@ class TradingBotWidget(QWidget):
 
         except Exception as e:
             self.log_message(f"Fehler beim Log-Schreiben: {e}", "ERROR")
+
+    def _update_trade_in_logs(self, trade_data: dict):
+        """
+        Aktualisiere einen Trade in Daily und Yearly Log (für nachträgliche Kommissions-Updates).
+        Der Trade wird über trade_id identifiziert.
+        """
+        trade_id = trade_data.get('trade_id')
+        if not trade_id:
+            self.log_message("Trade-Update fehlgeschlagen: keine trade_id", "ERROR")
+            return
+
+        try:
+            # Daily Log aktualisieren
+            if hasattr(self, 'daily_log_file') and self.daily_log_file.exists():
+                with open(self.daily_log_file, 'r', encoding='utf-8') as f:
+                    daily_data = json.load(f)
+
+                # Finde und aktualisiere den Trade
+                for i, trade in enumerate(daily_data.get('trades', [])):
+                    if trade.get('trade_id') == trade_id:
+                        daily_data['trades'][i] = trade_data
+                        break
+
+                with open(self.daily_log_file, 'w', encoding='utf-8') as f:
+                    json.dump(daily_data, f, indent=2, ensure_ascii=False)
+
+            # Yearly Log aktualisieren
+            if hasattr(self, 'yearly_log_file') and self.yearly_log_file.exists():
+                with open(self.yearly_log_file, 'r', encoding='utf-8') as f:
+                    yearly_data = json.load(f)
+
+                # Finde und aktualisiere den Trade
+                for i, trade in enumerate(yearly_data.get('trades', [])):
+                    if trade.get('trade_id') == trade_id:
+                        yearly_data['trades'][i] = trade_data
+                        break
+
+                with open(self.yearly_log_file, 'w', encoding='utf-8') as f:
+                    json.dump(yearly_data, f, indent=2, ensure_ascii=False)
+
+            self.log_message(f"Trade-Log aktualisiert: {trade_id}", "INFO")
+
+        except Exception as e:
+            self.log_message(f"Fehler beim Trade-Update: {e}", "ERROR")
 
     def _write_session_summary(self):
         """Schreibe Session-Zusammenfassung beim Beenden"""
@@ -933,10 +981,12 @@ class TradingBotWidget(QWidget):
 
             if order_type == 'ENTRY':
                 # Entry gefüllt -> Level wird aktiv
-                self._handle_entry_fill(level, fill_price, commission)
+                # FIX: Übergebe broker_id für nachträgliche Kommissions-Updates
+                self._handle_entry_fill(level, fill_price, commission, broker_id)
             elif order_type == 'EXIT':
                 # Exit gefüllt -> Level wird recycelt
-                self._handle_exit_fill(level, fill_price, commission)
+                # FIX: Übergebe broker_id für nachträgliche Kommissions-Updates
+                self._handle_exit_fill(level, fill_price, commission, broker_id)
 
             # Cleanup
             del self._order_callbacks[callback_id]
@@ -946,7 +996,7 @@ class TradingBotWidget(QWidget):
             del self.pending_orders[broker_id]
             self.update_pending_display()
 
-    def _handle_entry_fill(self, level: dict, fill_price: float, commission: float):
+    def _handle_entry_fill(self, level: dict, fill_price: float, commission: float, broker_id: str = None):
         """Verarbeite gefüllten Entry"""
         print(f">>> _handle_entry_fill: {level.get('scenario_name')}_L{level.get('level_num')}")
         print(f">>> waiting_levels hat {len(self.waiting_levels)} Einträge")
@@ -962,6 +1012,9 @@ class TradingBotWidget(QWidget):
         level['entry_commission'] = commission
         level['entry_time'] = datetime.now().isoformat()
         level['exit_order_placed'] = False
+        # FIX: Speichere broker_id für nachträgliche Kommissions-Updates
+        if broker_id:
+            level['entry_order_id'] = broker_id
 
         # Aus waiting entfernen und zu active hinzufügen
         if level in self.waiting_levels:
@@ -1000,19 +1053,25 @@ class TradingBotWidget(QWidget):
             commission=commission
         )
 
-    def _handle_exit_fill(self, level: dict, fill_price: float, commission: float):
+    def _handle_exit_fill(self, level: dict, fill_price: float, commission: float, broker_id: str = None):
         """Verarbeite gefüllten Exit"""
         entry_price = level.get('entry_fill_price', level.get('entry_price', 0))
         shares = level.get('shares', 100)
+        entry_commission = level.get('entry_commission', 0)
 
-        # P&L berechnen
+        # FIX: Speichere exit_order_id für nachträgliche Kommissions-Updates
+        if broker_id:
+            level['exit_order_id'] = broker_id
+
+        # P&L berechnen (vorläufig - Kommission kann später nachkommen)
+        total_commission = commission + entry_commission
         if level['type'] == 'LONG':
-            pnl = (fill_price - entry_price) * shares - commission - level.get('entry_commission', 0)
+            pnl = (fill_price - entry_price) * shares - total_commission
         else:
-            pnl = (entry_price - fill_price) * shares - commission - level.get('entry_commission', 0)
+            pnl = (entry_price - fill_price) * shares - total_commission
 
         self.log_message(
-            f"EXIT FILLED: {level['symbol']} @ ${fill_price:.2f}, P&L: ${pnl:+.2f}",
+            f"EXIT FILLED: {level['symbol']} @ ${fill_price:.2f}, P&L: ${pnl:+.2f} (Comm: ${total_commission:.4f})",
             "SUCCESS" if pnl >= 0 else "WARNING"
         )
 
@@ -1032,13 +1091,16 @@ class TradingBotWidget(QWidget):
             # Trade loggen
             trade_data = {
                 'timestamp': datetime.now().isoformat(),
+                'trade_id': trade_id,  # FIX: Speichere trade_id für nachträgliche Updates
                 'symbol': level['symbol'],
                 'type': level['type'],
                 'shares': shares,
                 'entry_price': entry_price,
                 'exit_price': fill_price,
                 'pnl': pnl,
-                'commission': commission + level.get('entry_commission', 0),
+                'commission': total_commission,
+                'entry_commission': entry_commission,
+                'exit_commission': commission,
                 'scenario': level.get('scenario_name', 'N/A'),
                 'level': level.get('level_num', 0)
             }
@@ -1049,6 +1111,11 @@ class TradingBotWidget(QWidget):
             # Excel Trading Log schreiben
             if hasattr(self, 'trading_log_exporter'):
                 self.trading_log_exporter.add_trade(trade_data)
+
+            # FIX: Speichere Trade für nachträgliche Kommissions-Updates
+            # Bei IBKR kommt die Kommission oft nach dem Fill-Event
+            if broker_id:
+                self._pending_exit_trades[broker_id] = trade_data.copy()
 
         # Trade zum Dashboard hinzufügen (Exit)
         side = 'SELL' if level['type'] == 'LONG' else 'BUY'  # Exit ist gegenteilig
@@ -1129,18 +1196,59 @@ class TradingBotWidget(QWidget):
             order_info['commission'] = total_commission
             self.log_message(
                 f"Kommission aktualisiert für Order {broker_id}: ${total_commission:.4f}",
-                "DEBUG"
+                "INFO"
             )
 
-        # Aktualisiere auch in active_levels falls vorhanden
+        # Aktualisiere Entry-Kommission in active_levels
         for level in self.active_levels:
             if level.get('entry_order_id') == broker_id:
+                old_commission = level.get('entry_commission', 0)
                 level['entry_commission'] = total_commission
+                self.daily_stats['total_commissions'] += (total_commission - old_commission)
                 self.log_message(
                     f"Entry-Kommission aktualisiert für {level.get('scenario_name')} L{level.get('level_num')}: ${total_commission:.4f}",
-                    "DEBUG"
+                    "INFO"
                 )
+                self.update_statistics_display()
                 break
+
+        # FIX: Aktualisiere auch Exit-Kommissionen für pending_exit_trades
+        # Diese werden in _pending_exit_trades gespeichert für nachträgliche Log-Updates
+        if hasattr(self, '_pending_exit_trades') and broker_id in self._pending_exit_trades:
+            trade_info = self._pending_exit_trades[broker_id]
+            old_exit_commission = trade_info.get('exit_commission', 0)
+            trade_info['exit_commission'] = total_commission
+
+            # Aktualisiere P&L mit korrekter Kommission
+            entry_commission = trade_info.get('entry_commission', 0)
+            total_trade_commission = entry_commission + total_commission
+            entry_price = trade_info['entry_price']
+            exit_price = trade_info['exit_price']
+            shares = trade_info['shares']
+
+            if trade_info['type'] == 'LONG':
+                pnl = (exit_price - entry_price) * shares - total_trade_commission
+            else:
+                pnl = (entry_price - exit_price) * shares - total_trade_commission
+
+            trade_info['pnl'] = pnl
+            trade_info['commission'] = total_trade_commission
+
+            # Daily Stats korrigieren
+            old_total_commission = entry_commission + old_exit_commission
+            self.daily_stats['total_commissions'] += (total_trade_commission - old_total_commission)
+
+            self.log_message(
+                f"Exit-Kommission nachgetragen für {trade_info.get('scenario', 'N/A')} L{trade_info.get('level', 0)}: ${total_commission:.4f}, P&L korrigiert: ${pnl:+.2f}",
+                "INFO"
+            )
+            self.update_statistics_display()
+
+            # Trade in JSON-Logs aktualisieren (nachträgliches Update)
+            self._update_trade_in_logs(trade_info)
+
+            # Trade aus pending entfernen nach erfolgreichem Update
+            del self._pending_exit_trades[broker_id]
 
     # ========== ENDE: IBKR SERVICE INTEGRATION ==========
 
