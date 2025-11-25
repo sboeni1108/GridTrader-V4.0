@@ -2497,9 +2497,18 @@ class TradingBotWidget(QWidget):
         
     
     def _start_market_data_timer(self):
-        """Starte Timer für Market Data Updates"""
-        
-        print("DEBUG BOT: Starting market data timer")  # DEBUG!
+        """
+        Starte Timer für Market Data Updates (LEGACY MODE)
+
+        WICHTIG: Diese Methode sollte NICHT mehr aufgerufen werden wenn
+        IBKRService verwendet wird. Market Data kommt dann per Push.
+        """
+        # GUARD: Starte NIE den Legacy-Timer wenn IBKRService verfügbar ist
+        if self._ibkr_service:
+            print("DEBUG BOT: Legacy timer NOT started - IBKRService is available")
+            return
+
+        print("DEBUG BOT: Starting LEGACY market data timer (no IBKRService)")
 
         if self.market_data_timer:
             self.market_data_timer.stop()
@@ -2507,9 +2516,9 @@ class TradingBotWidget(QWidget):
         self.market_data_timer = QTimer()
         self.market_data_timer.timeout.connect(self._update_market_data)
         interval = int(self.refresh_rate_spin.value() * 1000) if hasattr(self, 'refresh_rate_spin') else 2000
-        self.market_data_timer.start(interval)  # Konfigurierbar, Default 2s
+        self.market_data_timer.start(interval)
 
-        print(f"DEBUG BOT: Market data timer started with interval {interval}ms")  # DEBUG!
+        print(f"DEBUG BOT: LEGACY market data timer started with interval {interval}ms")
 
     def _update_market_data(self):
         """
@@ -3264,36 +3273,29 @@ class TradingBotWidget(QWidget):
             scenario_text = f"{level.get('scenario_name', 'N/A')} L{level['level_num']}"
             self.waiting_table.setItem(row, 7, QTableWidgetItem(scenario_text))
 
-    async def place_ibkr_order(self, symbol: str, side: str, quantity: int, order_type: str = "MARKET", limit_price: float = None, level_name: str = "Manual", level_data: dict = None):
-        """Platziere Order bei IBKR"""
+    def place_ibkr_order_via_service(self, symbol: str, side: str, quantity: int, order_type: str = "MARKET", limit_price: float = None, level_name: str = "Manual", level_data: dict = None) -> Optional[str]:
+        """
+        Platziere Order über IBKRService (NON-BLOCKING!)
 
-        # DEBUG: Order-Typ prüfen
-        print(f"DEBUG BOT: place_ibkr_order called - type={order_type}, limit_price={limit_price}")
-
-        if not self.live_trading_enabled:
-            self.log_message(f"ORDER (Simulation): {side} {quantity}x {symbol}", "TRADE")
-            return None
-
+        Verwendet den neuen IBKRService statt des Legacy-Adapters.
+        Returns callback_id für Tracking - das Ergebnis kommt via Signals.
+        """
+        print(f"DEBUG BOT: place_ibkr_order_via_service called - type={order_type}, limit_price={limit_price}")
 
         if not self.live_trading_enabled:
             self.log_message(f"ORDER (Simulation): {side} {quantity}x {symbol}", "TRADE")
             return None
 
-        adapter = self._get_shared_adapter()
-        if not adapter:
-            self.log_message("IBKR nicht verbunden - Verbinde im Live Trading Tab", "ERROR")
+        # Prüfe IBKRService Verbindung
+        if not self._ibkr_service or not self._service_connected:
+            self.log_message("IBKRService nicht verbunden - Verbinde im Live Trading Tab", "ERROR")
             return None
-
-
-        # DEBUG: Adapter Status prüfen
-        self.log_message(f"DEBUG: Adapter connected: {adapter.is_connected()}, Orders in queue: {len(adapter._orders) if hasattr(adapter, '_orders') else 'unknown'}", "INFO")
-
 
         try:
-            from gridtrader.domain.models.order import Order, OrderSide, OrderType, OrderStatus
+            from gridtrader.domain.models.order import Order, OrderSide, OrderType
             from decimal import Decimal
 
-            # Erstelle Domain Order (UUID wird automatisch generiert)
+            # Erstelle Domain Order
             order = Order(
                 symbol=symbol,
                 side=OrderSide.BUY if side == "BUY" else OrderSide.SELL,
@@ -3304,30 +3306,50 @@ class TradingBotWidget(QWidget):
             if limit_price:
                 order.limit_price = Decimal(str(limit_price))
 
-            # Platziere Order über Shared Adapter
-            broker_order_id = await adapter.place_order(order)
-            self.log_message(f"ORDER PLATZIERT: {side} {quantity}x {symbol} (ID: {broker_order_id})", "TRADE")
+            # Platziere Order über IBKRService (NON-BLOCKING!)
+            callback_id = self._ibkr_service.place_order(order)
 
-            # Füge zu pending orders (non-blocking!)
-            order_info = {
+            self.log_message(
+                f"ORDER GESENDET: {side} {quantity}x {symbol} @ {f'${limit_price:.2f}' if limit_price else 'Market'} (Callback: {callback_id[:8]}...)",
+                "TRADE"
+            )
+
+            # Speichere Order-Info für Callback-Verarbeitung
+            self._order_callbacks[callback_id] = {
+                'level': level_data,
+                'type': 'MANUAL',
+                'order': order,
+                'level_name': level_name,
                 'symbol': symbol,
-                'type': 'LONG' if side == 'BUY' else 'SHORT',
                 'side': side,
-                'quantity': quantity,
-                'status': 'SUBMITTED',
-                'timestamp': datetime.now().strftime('%H:%M:%S'),
-                'level_name': level_name,  # Verwendet den übergebenen Level-Namen
-                'order_object': order,  # Speichere Order-Objekt für Status-Updates
-                'level_data': level_data  # WICHTIG: Speichere vollständige Level-Daten!
+                'quantity': quantity
             }
-            self.add_pending_order(broker_order_id, order_info)
 
-               # Return sofort - kein Warten!
-            return broker_order_id
+            return callback_id
 
         except Exception as e:
             self.log_message(f"Order-Fehler: {e}", "ERROR")
+            import traceback
+            traceback.print_exc()
             return None
+
+    # Legacy async method - redirects to service method
+    async def place_ibkr_order(self, symbol: str, side: str, quantity: int, order_type: str = "MARKET", limit_price: float = None, level_name: str = "Manual", level_data: dict = None):
+        """
+        LEGACY - Redirects to IBKRService
+
+        Diese Methode ist für Abwärtskompatibilität.
+        Verwendet intern place_ibkr_order_via_service().
+        """
+        return self.place_ibkr_order_via_service(
+            symbol=symbol,
+            side=side,
+            quantity=quantity,
+            order_type=order_type,
+            limit_price=limit_price,
+            level_name=level_name,
+            level_data=level_data
+        )
 
     def update_pending_display(self):
         """Aktualisiere Pending Orders Anzeige"""
