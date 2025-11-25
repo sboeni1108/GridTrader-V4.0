@@ -445,6 +445,19 @@ class TradingBotWidget(QWidget):
         if success:
             self.log_message(f"IBKRService: {message}", "SUCCESS")
 
+            # UI aktualisieren
+            if hasattr(self, 'ibkr_status_label'):
+                self.ibkr_status_label.setText("Verbunden (Service)")
+                self.ibkr_status_label.setStyleSheet("font-size: 12px; font-weight: bold; color: #0a0;")
+            if hasattr(self, 'live_trading_cb'):
+                self.live_trading_cb.setEnabled(True)
+
+            # Stoppe Legacy Market Data Timer (falls laufend)
+            if self.market_data_timer:
+                self.market_data_timer.stop()
+                self.market_data_timer = None
+                self.log_message("Legacy Market Data Timer gestoppt", "INFO")
+
             # Subscribiere Market Data für alle aktiven Symbole
             self._subscribe_active_symbols()
         else:
@@ -455,10 +468,24 @@ class TradingBotWidget(QWidget):
         self._service_connected = False
         self.log_message("IBKRService getrennt", "INFO")
 
+        # UI aktualisieren
+        if hasattr(self, 'ibkr_status_label'):
+            self.ibkr_status_label.setText("Nicht verbunden")
+            self.ibkr_status_label.setStyleSheet("font-size: 12px; font-weight: bold; color: #c00;")
+        if hasattr(self, 'live_trading_cb'):
+            self.live_trading_cb.setEnabled(False)
+            self.live_trading_cb.setChecked(False)
+            self.live_trading_enabled = False
+
     def _on_service_connection_lost(self):
         """Callback wenn IBKRService Verbindung verliert"""
         self._service_connected = False
         self.log_message("IBKRService: Verbindung verloren!", "ERROR")
+
+        # UI aktualisieren
+        if hasattr(self, 'ibkr_status_label'):
+            self.ibkr_status_label.setText("Verbindung verloren!")
+            self.ibkr_status_label.setStyleSheet("font-size: 12px; font-weight: bold; color: #c00;")
 
     def _subscribe_active_symbols(self):
         """Subscribiere Market Data für alle aktiven Symbole"""
@@ -1842,12 +1869,19 @@ class TradingBotWidget(QWidget):
 
         # Füge Levels zur Waiting-Tabelle hinzu
         activated_count = 0
+        symbols_to_subscribe = set()
         for level in levels:
             self._add_to_waiting_table(level, config, base_price)
             activated_count += 1
+            symbols_to_subscribe.add(config['symbol'])
 
         # Sortiere Tabelle nach Symbol und Einstiegspreis
         self._sort_waiting_table()
+
+        # NEU: Subscribiere Market Data beim IBKRService
+        if self._ibkr_service and self._service_connected and symbols_to_subscribe:
+            self._ibkr_service.subscribe_market_data(list(symbols_to_subscribe))
+            self.log_message(f"Market Data subscribed: {', '.join(symbols_to_subscribe)}", "INFO")
 
         self.update_status(f"{activated_count} Level(s) aktiviert und warten auf Einstieg")
 
@@ -2290,28 +2324,57 @@ class TradingBotWidget(QWidget):
         self.connection_check_timer.start(2000)  # Alle 2 Sekunden prüfen
 
     def _check_shared_connection(self):
-        """Prüfe ob Shared IBKR Connection verfügbar ist"""
+        """
+        Prüfe ob IBKR Connection verfügbar ist
+
+        Priorisiert IBKRService (Event-basiert) über Legacy-Adapter (Polling).
+        Wenn IBKRService verbunden ist, wird kein Market Data Timer gestartet,
+        da die Daten per Push über Signals kommen.
+        """
+        # PRIORITÄT 1: IBKRService (Event-basiert, non-blocking)
+        if self._ibkr_service and self._ibkr_service.is_connected():
+            if self.ibkr_status_label.text() != "Verbunden (Service)":
+                self.ibkr_status_label.setText("Verbunden (Service)")
+                self.ibkr_status_label.setStyleSheet("font-size: 12px; font-weight: bold; color: #0a0;")
+                self.live_trading_cb.setEnabled(True)
+                self._service_connected = True
+                self.log_message("IBKRService verbunden (Event-basiert)", "SUCCESS")
+
+                # WICHTIG: Kein Market Data Timer nötig - Daten kommen per Push!
+                # Stoppe eventuell laufenden Legacy-Timer
+                if self.market_data_timer:
+                    self.market_data_timer.stop()
+                    self.market_data_timer = None
+                    self.log_message("Legacy Market Data Timer gestoppt", "INFO")
+
+                # Subscribiere Symbole für alle aktiven Levels
+                self._subscribe_active_symbols()
+            return
+
+        # PRIORITÄT 2: Legacy Adapter (Polling, kann blockieren)
         adapter = get_shared_adapter()
 
         if adapter and adapter.is_connected():
-            # Verbunden
-            if self.ibkr_status_label.text() != "Verbunden":
-                self.ibkr_status_label.setText("Verbunden")
-                self.ibkr_status_label.setStyleSheet("font-size: 12px; font-weight: bold; color: #0a0;")
+            # Legacy Adapter verbunden
+            if self.ibkr_status_label.text() != "Verbunden (Legacy)":
+                self.ibkr_status_label.setText("Verbunden (Legacy)")
+                self.ibkr_status_label.setStyleSheet("font-size: 12px; font-weight: bold; color: #aa0;")
                 self.live_trading_cb.setEnabled(True)
-                self.log_message("IBKR Shared Connection aktiv", "SUCCESS")
+                self._service_connected = False
+                self.log_message("IBKR Legacy Adapter aktiv (Polling-Modus)", "WARNING")
 
-                # Starte Market Data Timer wenn noch nicht gestartet
+                # Legacy: Starte Market Data Timer (kann blockieren!)
                 if not self.market_data_timer:
                     self._start_market_data_timer()
         else:
             # Nicht verbunden
-            if self.ibkr_status_label.text() != "Nicht verbunden":
+            if self.ibkr_status_label.text() not in ["Nicht verbunden", ""]:
                 self.ibkr_status_label.setText("Nicht verbunden")
                 self.ibkr_status_label.setStyleSheet("font-size: 12px; font-weight: bold; color: #c00;")
                 self.live_trading_cb.setEnabled(False)
                 self.live_trading_cb.setChecked(False)
                 self.live_trading_enabled = False
+                self._service_connected = False
 
                 # Stoppe Market Data Timer
                 if self.market_data_timer:
