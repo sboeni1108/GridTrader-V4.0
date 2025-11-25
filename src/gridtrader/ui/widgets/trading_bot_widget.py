@@ -2327,59 +2327,53 @@ class TradingBotWidget(QWidget):
         """
         Prüfe ob IBKR Connection verfügbar ist
 
-        Priorisiert IBKRService (Event-basiert) über Legacy-Adapter (Polling).
-        Wenn IBKRService verbunden ist, wird kein Market Data Timer gestartet,
-        da die Daten per Push über Signals kommen.
+        WICHTIG: Verwendet NUR den IBKRService!
+        Der Legacy-Adapter wird NICHT mehr verwendet um Blockierungen zu vermeiden.
         """
-        # PRIORITÄT 1: IBKRService (Event-basiert, non-blocking)
-        if self._ibkr_service and self._ibkr_service.is_connected():
-            if self.ibkr_status_label.text() != "Verbunden (Service)":
-                self.ibkr_status_label.setText("Verbunden (Service)")
-                self.ibkr_status_label.setStyleSheet("font-size: 12px; font-weight: bold; color: #0a0;")
-                self.live_trading_cb.setEnabled(True)
-                self._service_connected = True
-                self.log_message("IBKRService verbunden (Event-basiert)", "SUCCESS")
+        # NUR IBKRService verwenden (Event-basiert, non-blocking)
+        if self._ibkr_service:
+            if self._ibkr_service.is_connected():
+                # Verbunden!
+                if not self._service_connected:
+                    self.ibkr_status_label.setText("Verbunden (Service)")
+                    self.ibkr_status_label.setStyleSheet("font-size: 12px; font-weight: bold; color: #0a0;")
+                    self.live_trading_cb.setEnabled(True)
+                    self._service_connected = True
+                    self.log_message("IBKRService verbunden (Event-basiert)", "SUCCESS")
 
-                # WICHTIG: Kein Market Data Timer nötig - Daten kommen per Push!
-                # Stoppe eventuell laufenden Legacy-Timer
-                if self.market_data_timer:
-                    self.market_data_timer.stop()
-                    self.market_data_timer = None
-                    self.log_message("Legacy Market Data Timer gestoppt", "INFO")
+                    # WICHTIG: Stoppe Legacy-Timer falls laufend
+                    if self.market_data_timer:
+                        self.market_data_timer.stop()
+                        self.market_data_timer = None
 
-                # Subscribiere Symbole für alle aktiven Levels
-                self._subscribe_active_symbols()
+                    # Subscribiere Symbole für alle aktiven Levels
+                    self._subscribe_active_symbols()
+            else:
+                # Nicht verbunden - warte auf Verbindung im Live Data Tab
+                if self._service_connected:
+                    self.ibkr_status_label.setText("Nicht verbunden")
+                    self.ibkr_status_label.setStyleSheet("font-size: 12px; font-weight: bold; color: #c00;")
+                    self.live_trading_cb.setEnabled(False)
+                    self.live_trading_cb.setChecked(False)
+                    self.live_trading_enabled = False
+                    self._service_connected = False
+                    self.log_message("IBKRService getrennt", "WARNING")
+
+                    # Stoppe Legacy-Timer falls laufend
+                    if self.market_data_timer:
+                        self.market_data_timer.stop()
+                        self.market_data_timer = None
             return
 
-        # PRIORITÄT 2: Legacy Adapter (Polling, kann blockieren)
-        adapter = get_shared_adapter()
-
-        if adapter and adapter.is_connected():
-            # Legacy Adapter verbunden
-            if self.ibkr_status_label.text() != "Verbunden (Legacy)":
-                self.ibkr_status_label.setText("Verbunden (Legacy)")
-                self.ibkr_status_label.setStyleSheet("font-size: 12px; font-weight: bold; color: #aa0;")
-                self.live_trading_cb.setEnabled(True)
-                self._service_connected = False
-                self.log_message("IBKR Legacy Adapter aktiv (Polling-Modus)", "WARNING")
-
-                # Legacy: Starte Market Data Timer (kann blockieren!)
-                if not self.market_data_timer:
-                    self._start_market_data_timer()
-        else:
-            # Nicht verbunden
-            if self.ibkr_status_label.text() not in ["Nicht verbunden", ""]:
-                self.ibkr_status_label.setText("Nicht verbunden")
-                self.ibkr_status_label.setStyleSheet("font-size: 12px; font-weight: bold; color: #c00;")
-                self.live_trading_cb.setEnabled(False)
-                self.live_trading_cb.setChecked(False)
-                self.live_trading_enabled = False
-                self._service_connected = False
-
-                # Stoppe Market Data Timer
-                if self.market_data_timer:
-                    self.market_data_timer.stop()
-                    self.market_data_timer = None
+        # Kein IBKRService verfügbar - zeige Warnung
+        if self.ibkr_status_label.text() != "Service nicht verfügbar":
+            self.ibkr_status_label.setText("Service nicht verfügbar")
+            self.ibkr_status_label.setStyleSheet("font-size: 12px; font-weight: bold; color: #c00;")
+            self.live_trading_cb.setEnabled(False)
+            # WICHTIG: Legacy-Adapter NICHT verwenden (blockiert!)
+            if self.market_data_timer:
+                self.market_data_timer.stop()
+                self.market_data_timer = None
 
     def _get_shared_adapter(self) -> Optional[IBKRBrokerAdapter]:
         """Hole den Shared IBKR Adapter"""
@@ -2518,7 +2512,22 @@ class TradingBotWidget(QWidget):
         print(f"DEBUG BOT: Market data timer started with interval {interval}ms")  # DEBUG!
 
     def _update_market_data(self):
-        """Update Market Data für alle aktiven Levels"""
+        """
+        Update Market Data für alle aktiven Levels (LEGACY MODE)
+
+        WICHTIG: Diese Methode wird NUR im Legacy-Modus verwendet!
+        Wenn IBKRService aktiv ist, kommen die Daten per Push über
+        _on_market_data_update() und diese Methode wird übersprungen.
+        """
+        # WICHTIG: Skip wenn IBKRService verbunden (Daten kommen per Push!)
+        if self._ibkr_service and self._service_connected:
+            # Im Service-Modus: Timer sollte gar nicht laufen
+            if self.market_data_timer and self.market_data_timer.isActive():
+                print("DEBUG BOT: Stopping legacy timer - IBKRService is active")
+                self.market_data_timer.stop()
+                self.market_data_timer = None
+            return
+
         adapter = self._get_shared_adapter()
         if not adapter:
             return
