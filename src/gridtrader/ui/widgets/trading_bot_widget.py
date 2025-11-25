@@ -2016,12 +2016,17 @@ class TradingBotWidget(QWidget):
                 # Hole aktuellen Marktpreis wenn verfügbar
                 current_market_price = None
                 if hasattr(self, '_last_market_prices') and level_data['symbol'] in self._last_market_prices:
-                    current_market_price = self._last_market_prices[level_data['symbol']]
+                    price_data = self._last_market_prices[level_data['symbol']]
+                    # Handle both dict format (from IBKRService) and float format (legacy)
+                    if isinstance(price_data, dict):
+                        current_market_price = price_data.get('last', 0) or price_data.get('mid', 0)
+                    else:
+                        current_market_price = float(price_data) if price_data else None
 
                 # Update Aktueller Preis (Spalte 4)
                 price_item = self.waiting_table.item(row, 4)
                 if price_item:
-                    if current_market_price is not None:
+                    if current_market_price is not None and current_market_price > 0:
                         price_item.setText(f"${current_market_price:.2f}")
                     else:
                         price_item.setText("--")

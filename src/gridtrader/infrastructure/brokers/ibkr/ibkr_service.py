@@ -621,12 +621,14 @@ class IBKRService:
 
             # IB Order erstellen
             if order.order_type == OrderType.LIMIT:
+                # WICHTIG: Limitpreis auf 2 Dezimalstellen runden (Tick Size für US Aktien)
+                limit_price = round(float(order.limit_price), 2)
                 ib_order = LimitOrder(
                     action='BUY' if order.side == OrderSide.BUY else 'SELL',
                     totalQuantity=order.quantity,
-                    lmtPrice=float(order.limit_price)
+                    lmtPrice=limit_price
                 )
-                print(f">>> Limit Order: {ib_order.action} {ib_order.totalQuantity}x @ ${ib_order.lmtPrice}")
+                print(f">>> Limit Order: {ib_order.action} {ib_order.totalQuantity}x @ ${limit_price:.2f}")
             else:
                 ib_order = MarketOrder(
                     action='BUY' if order.side == OrderSide.BUY else 'SELL',
