@@ -3235,6 +3235,113 @@ class TradingBotWidget(QWidget):
         # Update count label
         self.pending_count_label.setText(f"{len(self.pending_orders)} pending orders")
 
+    def update_waiting_levels_display(self):
+        """Aktualisiere Wartende Levels Anzeige basierend auf self.waiting_levels"""
+        self.waiting_table.setRowCount(0)  # Clear table
+
+        for level in self.waiting_levels:
+            row = self.waiting_table.rowCount()
+            self.waiting_table.insertRow(row)
+
+            # Symbol
+            self.waiting_table.setItem(row, 0, QTableWidgetItem(level.get('symbol', '')))
+
+            # Typ (LONG/SHORT)
+            type_item = QTableWidgetItem(level.get('type', ''))
+            if level.get('type') == 'LONG':
+                type_item.setForeground(QColor(0, 128, 0))
+            else:
+                type_item.setForeground(QColor(128, 0, 0))
+            self.waiting_table.setItem(row, 1, type_item)
+
+            # Zielpreis (Einstieg)
+            entry_price = level.get('entry_price')
+            entry_text = f"${entry_price:.2f}" if entry_price else "Warte..."
+            self.waiting_table.setItem(row, 2, QTableWidgetItem(entry_text))
+
+            # Ausstiegspreis
+            exit_price = level.get('exit_price')
+            exit_text = f"${exit_price:.2f}" if exit_price else "Warte..."
+            self.waiting_table.setItem(row, 3, QTableWidgetItem(exit_text))
+
+            # Akt. Preis (wird später durch Market Data aktualisiert)
+            self.waiting_table.setItem(row, 4, QTableWidgetItem("--"))
+
+            # Diff. zum Einstieg
+            self.waiting_table.setItem(row, 5, QTableWidgetItem("--"))
+
+            # Status
+            status = level.get('status', 'waiting')
+            status_item = QTableWidgetItem(status)
+            self.waiting_table.setItem(row, 6, status_item)
+
+            # Szenario
+            scenario_text = f"{level.get('scenario_name', 'N/A')} L{level.get('level_num', 0)}"
+            self.waiting_table.setItem(row, 7, QTableWidgetItem(scenario_text))
+
+        # Update count label
+        self.waiting_count_label.setText(f"{len(self.waiting_levels)} wartende Levels")
+
+    def update_active_levels_display(self):
+        """Aktualisiere Aktive Levels Anzeige basierend auf self.active_levels"""
+        self.active_table.setRowCount(0)  # Clear table
+
+        for level in self.active_levels:
+            row = self.active_table.rowCount()
+            self.active_table.insertRow(row)
+
+            # Symbol
+            self.active_table.setItem(row, 0, QTableWidgetItem(level.get('symbol', '')))
+
+            # Typ (LONG/SHORT)
+            type_item = QTableWidgetItem(level.get('type', ''))
+            if level.get('type') == 'LONG':
+                type_item.setForeground(QColor(0, 128, 0))
+            else:
+                type_item.setForeground(QColor(128, 0, 0))
+            self.active_table.setItem(row, 1, type_item)
+
+            # Einstiegspreis
+            entry_price = level.get('entry_fill_price') or level.get('entry_price', 0)
+            self.active_table.setItem(row, 2, QTableWidgetItem(f"${entry_price:.2f}"))
+
+            # Zielpreis (Exit)
+            exit_price = level.get('exit_price', 0)
+            self.active_table.setItem(row, 3, QTableWidgetItem(f"${exit_price:.2f}"))
+
+            # Akt. Preis (wird später durch Market Data aktualisiert)
+            self.active_table.setItem(row, 4, QTableWidgetItem("--"))
+
+            # Akt. P&L (wird später berechnet)
+            self.active_table.setItem(row, 5, QTableWidgetItem("--"))
+
+            # Diff. zum Ziel
+            self.active_table.setItem(row, 6, QTableWidgetItem("--"))
+
+            # Dauer
+            entry_time = level.get('entry_time')
+            if entry_time:
+                try:
+                    entry_dt = datetime.fromisoformat(entry_time)
+                    duration = datetime.now() - entry_dt
+                    duration_str = str(duration).split('.')[0]  # Remove microseconds
+                except:
+                    duration_str = "--"
+            else:
+                duration_str = "--"
+            self.active_table.setItem(row, 7, QTableWidgetItem(duration_str))
+
+            # Status
+            status = "Aktiv" if not level.get('exit_order_placed') else "Exit platziert"
+            self.active_table.setItem(row, 8, QTableWidgetItem(status))
+
+            # Szenario
+            scenario_text = f"{level.get('scenario_name', 'N/A')} L{level.get('level_num', 0)}"
+            self.active_table.setItem(row, 9, QTableWidgetItem(scenario_text))
+
+        # Update count label
+        self.active_count_label.setText(f"{len(self.active_levels)} aktive Levels")
+
     def add_pending_order(self, order_id: str, order_info: dict):
         """Füge Order zu Pending hinzu"""
         self.pending_orders[order_id] = order_info
