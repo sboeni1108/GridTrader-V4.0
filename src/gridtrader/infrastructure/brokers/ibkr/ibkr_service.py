@@ -39,6 +39,8 @@ callback_id = service.place_order(order)
 ```
 """
 import asyncio
+import nest_asyncio
+nest_asyncio.apply()
 import threading
 import sys
 from typing import Dict, Optional, List, Set, Any
@@ -853,3 +855,4 @@ def stop_ibkr_service():
     if _ibkr_service:
         _ibkr_service.stop()
         _ibkr_service = None
+
