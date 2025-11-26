@@ -4245,11 +4245,11 @@ class TradingBotWidget(QWidget):
 
     def close_orphan_position(self, orphan_id: str, close_price: float = None) -> bool:
         """
-        Schließt eine Waisen-Position durch Platzierung einer Market-Order.
+        Schließt eine Waisen-Position durch Platzierung einer LIMIT-Order.
 
         Args:
             orphan_id: ID der Waisen-Position
-            close_price: Optionaler Close-Preis (für Logging, wird Market-Order)
+            close_price: Optionaler Close-Preis für Limit-Order (falls None: current_price)
 
         Returns:
             True wenn Order platziert wurde
@@ -4299,14 +4299,23 @@ class TradingBotWidget(QWidget):
             # Markiere als "closing"
             orphan['status'] = 'closing'
 
-            # Platziere Market-Order
+            # Bestimme Limit-Preis: Parameter > current_price > entry_price als Fallback
+            limit_price = close_price or orphan.get('current_price') or orphan.get('entry_price')
+
+            if not limit_price:
+                self.log_message(f"Kein Preis für Limit-Order verfügbar (orphan_id: {orphan_id})", "ERROR")
+                orphan['status'] = 'open'  # Reset status
+                return False
+
+            # Platziere LIMIT-Order (NICHT Market!)
             from gridtrader.domain.models.order import Order, OrderSide, OrderType
 
             order = Order(
                 symbol=symbol,
                 side=OrderSide.SELL if order_action == 'SELL' else OrderSide.BUY,
                 quantity=shares,
-                order_type=OrderType.MARKET,
+                order_type=OrderType.LIMIT,
+                limit_price=limit_price,
             )
 
             # Callback für Fill registrieren
@@ -4319,7 +4328,7 @@ class TradingBotWidget(QWidget):
             )
 
             self.log_message(
-                f"📤 Schließe Waisen-Position: {order_action} {shares}x {symbol} (Order: {order_id})",
+                f"📤 Schließe Waisen-Position: LIMIT {order_action} {shares}x {symbol} @ ${limit_price:.2f} (Order: {order_id})",
                 "INFO"
             )
 
