@@ -28,6 +28,14 @@ from .analysis import (
     PatternMatcher, PatternMatchResult, SituationFingerprint, MovementPattern,
 )
 
+# Entscheidungs-Module
+from .decision import (
+    LevelScorer, LevelScore, MarketContext, ScorerConfig,
+    LevelOptimizer, LevelCandidate, OptimizationResult, OptimizationConstraints,
+    OptimizationStrategy, create_candidate_from_score,
+    PricePredictor, PredictionContext, PredictionTimeframe, DirectionBias,
+)
+
 # Timezone support
 try:
     from zoneinfo import ZoneInfo
@@ -135,6 +143,33 @@ class KIControllerThread(QThread):
             similarity_threshold=self.config.analysis.pattern_similarity_threshold,
             lookback_days=self.config.analysis.pattern_lookback_days,
         )
+
+        # ==================== ENTSCHEIDUNGS-MODULE ====================
+        # Level Scorer für Multi-Faktor Bewertung
+        scorer_config = ScorerConfig(
+            min_score_for_recommendation=30.0,
+            max_distance_pct=self.config.decision.min_level_distance_pct * 30,  # 3% bei 0.1% default
+            min_profit_pct=self.config.decision.min_profit_margin_pct,
+            commission_per_trade=1.0,  # $1 pro Trade (IBKR)
+        )
+        self._level_scorer = LevelScorer(config=scorer_config)
+
+        # Optimizer für Level-Kombination
+        optimizer_constraints = OptimizationConstraints(
+            max_levels_total=self.config.risk_limits.max_active_levels,
+            max_levels_per_symbol=self.config.decision.max_levels_per_decision,
+            long_short_ratio_min=self.config.decision.long_short_ratio_min,
+            long_short_ratio_max=self.config.decision.long_short_ratio_max,
+            min_distance_between_levels_pct=self.config.decision.min_level_distance_pct,
+            min_score_threshold=30.0,
+        )
+        self._level_optimizer = LevelOptimizer(
+            constraints=optimizer_constraints,
+            strategy=OptimizationStrategy.BALANCED,
+        )
+
+        # Predictor für Preis-Vorhersagen
+        self._price_predictor = PricePredictor()
 
     # ==================== THREAD LIFECYCLE ====================
 
@@ -633,120 +668,156 @@ class KIControllerThread(QThread):
         current_levels: List[ActiveLevelInfo]
     ) -> List[dict]:
         """
-        Berechnet die optimale Level-Kombination
+        Berechnet die optimale Level-Kombination.
 
-        Dies ist die Kern-Intelligenz des Controllers.
-        Vereinfachte Version für Phase 1 - wird in Phase 3 massiv erweitert.
+        Verwendet die Decision-Module:
+        - LevelScorer für Multi-Faktor Bewertung
+        - LevelOptimizer für optimale Kombination
+        - PricePredictor für Richtungs-Vorhersage
         """
-        optimal = []
         current_price = float(market_state.current_price)
 
         if current_price <= 0:
-            return optimal
+            return []
 
-        # Scoring für jedes verfügbare Level
-        scored_levels = []
-        for level in available_levels:
-            score = self._score_level(level, market_state)
-            scored_levels.append((score, level))
+        # 1. Markt-Kontext erstellen
+        market_context = self._create_market_context(symbol, market_state)
 
-        # Sortiere nach Score (höchster zuerst)
-        scored_levels.sort(key=lambda x: x[0], reverse=True)
+        # 2. Preis-Vorhersage abrufen
+        prediction_context = self._create_prediction_context(symbol, market_state)
+        prediction = self._price_predictor.predict(prediction_context)
 
-        # Wähle Top-N Levels unter Berücksichtigung der Balance
-        max_levels = self.config.decision.max_levels_per_decision
-        long_count = 0
-        short_count = 0
+        # Pattern-Info zum MarketContext hinzufügen
+        if prediction.predictions:
+            pred_5min = prediction.predictions.get(PredictionTimeframe.MINUTES_5)
+            if pred_5min:
+                market_context.pattern_prediction = pred_5min.direction.value
+                market_context.pattern_confidence = pred_5min.confidence
 
-        for score, level in scored_levels:
-            if len(optimal) >= max_levels:
-                break
+        # 3. Alle Levels bewerten mit LevelScorer
+        level_scores = self._level_scorer.score_levels(available_levels, market_context)
 
-            if score < 0:  # Negative Scores ignorieren
-                continue
+        # 4. LevelCandidates erstellen für Optimizer
+        candidates = []
+        for ls in level_scores:
+            candidate = create_candidate_from_score(ls)
+            candidates.append(candidate)
 
-            side = level.get('side', 'LONG')
+        # 5. Aktuelle aktive Levels in Candidates konvertieren
+        current_candidates = []
+        for active in current_levels:
+            current_candidates.append(LevelCandidate(
+                level_id=active.level_id,
+                symbol=active.symbol,
+                side=active.side,
+                entry_price=float(active.entry_price),
+                exit_price=float(active.exit_price),
+                score=active.score,
+                is_recommended=True,
+                distance_pct=0,
+                profit_pct=0,
+            ))
 
-            # Long/Short Balance prüfen
-            total = long_count + short_count + 1
-            if side == 'LONG':
-                new_long_ratio = (long_count + 1) / total
-                if new_long_ratio > self.config.decision.long_short_ratio_max:
-                    continue
-                long_count += 1
-            else:
-                new_short_ratio = (short_count + 1) / total
-                if new_short_ratio > self.config.decision.long_short_ratio_max:
-                    continue
-                short_count += 1
+        # 6. Optimizer ausführen
+        optimization_result = self._level_optimizer.optimize(
+            candidates=candidates,
+            current_active=current_candidates,
+            current_price=current_price,
+        )
 
-            optimal.append(level)
+        # 7. Ergebnis in Level-Dicts konvertieren
+        optimal = []
+        for selected in optimization_result.selected_levels:
+            # Original Level-Dict finden
+            for level in available_levels:
+                if level.get('level_id') == selected.level_id:
+                    # Score hinzufügen für spätere Referenz
+                    level['score'] = selected.score
+                    optimal.append(level)
+                    break
+
+        # Log wenn interessant
+        if self.config.log_analysis_details and optimization_result.selected_levels:
+            self._log(
+                f"{symbol}: Optimierung - {optimization_result.total_count} Levels, "
+                f"Score: {optimization_result.total_score:.0f}, "
+                f"L/S: {optimization_result.long_count}/{optimization_result.short_count}",
+                "INFO"
+            )
 
         return optimal
 
+    def _create_market_context(self, symbol: str, ms: MarketState) -> MarketContext:
+        """Erstellt MarketContext für den LevelScorer"""
+        # Volumen-Daten
+        vol_snapshot = self._volume_analyzer.get_snapshot(symbol)
+        vol_ratio = vol_snapshot.volume_ratio if vol_snapshot else 1.0
+        vol_condition = vol_snapshot.condition.value if vol_snapshot else "NORMAL"
+
+        # Zeit-Profil
+        time_snapshot = self._time_profile.get_current_snapshot()
+
+        # Pattern-Info (falls verfügbar)
+        pattern_result = self._pattern_matcher.get_latest_result(symbol) if hasattr(self._pattern_matcher, 'get_latest_result') else None
+
+        return MarketContext(
+            current_price=float(ms.current_price),
+            atr_5=ms.atr_5,
+            atr_14=getattr(ms, 'atr_14', ms.atr_5),
+            atr_50=getattr(ms, 'atr_50', ms.atr_5),
+            volatility_regime=ms.volatility_regime.value,
+            volume_ratio=vol_ratio,
+            volume_condition=vol_condition,
+            trading_phase=time_snapshot.phase.value,
+            caution_level=time_snapshot.caution_level,
+            short_term_trend=ms.price_change_5min,
+            medium_term_trend=ms.price_change_15min,
+        )
+
+    def _create_prediction_context(self, symbol: str, ms: MarketState) -> PredictionContext:
+        """Erstellt PredictionContext für den Predictor"""
+        vol_snapshot = self._volume_analyzer.get_snapshot(symbol)
+        time_snapshot = self._time_profile.get_current_snapshot()
+
+        # Pattern Matcher Ergebnisse holen (falls vorhanden)
+        pattern_prediction = None
+        pattern_confidence = 0.0
+        expected_5min = 0.0
+        expected_15min = 0.0
+
+        return PredictionContext(
+            symbol=symbol,
+            current_price=float(ms.current_price),
+            atr_5=ms.atr_5,
+            atr_14=getattr(ms, 'atr_14', ms.atr_5),
+            volatility_regime=ms.volatility_regime.value,
+            volume_ratio=vol_snapshot.volume_ratio if vol_snapshot else 1.0,
+            volume_condition=vol_snapshot.condition.value if vol_snapshot else "NORMAL",
+            volume_trend=vol_snapshot.trend.value if vol_snapshot else "STABLE",
+            price_change_1min=getattr(ms, 'price_change_1min', 0),
+            price_change_5min=ms.price_change_5min,
+            price_change_15min=ms.price_change_15min,
+            trading_phase=time_snapshot.phase.value,
+            minutes_since_open=time_snapshot.minutes_since_open,
+            pattern_prediction=pattern_prediction,
+            pattern_confidence=pattern_confidence,
+            expected_5min_change=expected_5min,
+            expected_15min_change=expected_15min,
+        )
+
     def _score_level(self, level: dict, market_state: MarketState) -> float:
         """
-        Bewertet ein einzelnes Level
+        Bewertet ein einzelnes Level mit dem LevelScorer.
 
-        Score-Faktoren:
-        - Abstand zum aktuellen Preis
-        - Passend zum Volatilitäts-Regime
-        - Profit-Potenzial
+        Diese Methode ist jetzt ein Wrapper für den LevelScorer.
         """
-        score = 0.0
-        current_price = float(market_state.current_price)
+        market_context = self._create_market_context(
+            level.get('symbol', ''),
+            market_state
+        )
 
-        if current_price <= 0:
-            return -1
-
-        entry_price = level.get('entry_price', 0)
-        exit_price = level.get('exit_price', 0)
-        side = level.get('side', 'LONG')
-
-        if not entry_price or not exit_price:
-            return -1
-
-        # 1. Abstand zum Entry (näher = besser, aber nicht zu nah)
-        entry_distance_pct = abs(entry_price - current_price) / current_price * 100
-
-        if entry_distance_pct < 0.1:
-            score -= 10  # Zu nah am Entry
-        elif entry_distance_pct < 0.5:
-            score += 30  # Guter Abstand
-        elif entry_distance_pct < 1.0:
-            score += 20
-        elif entry_distance_pct < 2.0:
-            score += 10
-        else:
-            score -= 5  # Zu weit weg
-
-        # 2. Profit-Potenzial
-        if side == 'LONG':
-            profit_pct = (exit_price - entry_price) / entry_price * 100
-        else:
-            profit_pct = (entry_price - exit_price) / entry_price * 100
-
-        if profit_pct > self.config.decision.min_profit_margin_pct:
-            score += profit_pct * 10
-
-        # 3. Volatilitäts-Anpassung
-        regime = market_state.volatility_regime
-
-        # Größere Steps bei hoher Volatilität bevorzugen
-        step_pct = abs(exit_price - entry_price) / entry_price * 100
-
-        if regime == VolatilityRegime.HIGH:
-            if step_pct > 0.8:
-                score += 20  # Große Steps bei hoher Vola
-            elif step_pct < 0.3:
-                score -= 10  # Kleine Steps vermeiden
-        elif regime == VolatilityRegime.LOW:
-            if step_pct < 0.4:
-                score += 20  # Kleine Steps bei niedriger Vola
-            elif step_pct > 0.8:
-                score -= 10  # Große Steps vermeiden
-
-        return score
+        level_score = self._level_scorer.score_level(level, market_context)
+        return level_score.total_score
 
     def _identify_levels_to_activate(
         self,
