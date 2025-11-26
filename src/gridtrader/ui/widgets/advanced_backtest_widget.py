@@ -629,10 +629,233 @@ class DataFetcher(QThread):
             if datetime.fromtimestamp(cache_file.stat().st_mtime) < cutoff:
                 cache_file.unlink()
                 self.progress_update.emit(f"🗑️ Alter Cache gelöscht: {cache_file.name}")
-    
+
     def get_id(self) -> str:
         """Eindeutige ID für diesen Worker"""
         return f"{self.symbol}_{self.timeframe_days}d_{self.candle_minutes}m"
+
+
+class MonteCarloWorker(QThread):
+    """Worker Thread für Monte-Carlo Simulation zur Szenario-Optimierung"""
+    progress_update = Signal(int, str)  # (progress_percent, message)
+    results_ready = Signal(list)  # Liste der besten Szenarien
+    error_occurred = Signal(str)
+
+    def __init__(self, historical_data, stats, params):
+        """
+        Args:
+            historical_data: DataFrame mit historischen Kursdaten
+            stats: Dict mit Voranalyse-Statistiken
+            params: Dict mit UI-Parametern (shares, min_levels, max_levels, etc.)
+        """
+        super().__init__()
+        self.historical_data = historical_data
+        self.stats = stats
+        self.params = params
+        self.num_iterations = params.get('iterations', 5000)
+        self.num_top_scenarios = params.get('max_scenarios', 6)
+
+    def run(self):
+        """Führe Monte-Carlo Simulation durch"""
+        try:
+            self.progress_update.emit(0, "🎲 Starte Monte-Carlo Simulation...")
+
+            # Parameter aus Stats und Params extrahieren
+            kerzen_range = self.stats['kerzen_range_avg']
+            typical_rebound = self.stats['typical_rebound']
+            avg_price = self.stats['avg_price']
+
+            shares = self.params['shares']
+            min_levels = self.params['min_levels']
+            max_levels = self.params['max_levels']
+            min_profit_cents = self.params['min_profit_cents'] / 100  # In Dollar
+
+            # Minimales Exit% basierend auf min_profit_cents
+            min_exit_pct = max(0.1, (min_profit_cents * 100) / avg_price)
+
+            # Definiere Parameterverteilungen
+            # Step%: Log-Normal um Kerzen-Range (damit wir häufige Fills bekommen)
+            step_mean = kerzen_range * 0.6  # Etwas unter Kerzen-Range für mehr Fills
+            step_std = kerzen_range * 0.3
+
+            # Exit%: Normal um typischen Rebound
+            exit_mean = typical_rebound * 0.7
+            exit_std = typical_rebound * 0.3
+
+            # Simulationsergebnisse sammeln
+            results = []
+
+            for i in range(self.num_iterations):
+                # Progress Update alle 100 Iterationen
+                if i % 100 == 0:
+                    progress = int((i / self.num_iterations) * 100)
+                    self.progress_update.emit(progress, f"🎲 Simulation {i}/{self.num_iterations}...")
+
+                # Zufällige Parameter generieren
+                step_pct = max(0.1, np.random.normal(step_mean, step_std))
+                step_pct = round(min(1.5, step_pct), 2)  # Limitiere auf 1.5%
+
+                exit_pct = max(min_exit_pct, np.random.normal(exit_mean, exit_std))
+                exit_pct = round(min(1.5, exit_pct), 2)  # Limitiere auf 1.5%
+
+                levels = np.random.randint(min_levels, max_levels + 1)
+                trade_type = np.random.choice(['LONG', 'SHORT'])
+
+                # Schnelle Simulation durchführen
+                sim_result = self._quick_simulate(
+                    step_pct, exit_pct, levels, shares, trade_type
+                )
+
+                if sim_result['trades'] > 0:
+                    results.append({
+                        'step': step_pct,
+                        'exit': exit_pct,
+                        'levels': levels,
+                        'shares': shares,
+                        'type': trade_type,
+                        'trades': sim_result['trades'],
+                        'pnl': sim_result['pnl'],
+                        'std': sim_result['std'],
+                        'sharpe': sim_result['sharpe'],
+                        'win_rate': sim_result['win_rate']
+                    })
+
+            self.progress_update.emit(90, "📊 Analysiere Ergebnisse...")
+
+            if not results:
+                self.error_occurred.emit("Keine gültigen Simulationsergebnisse")
+                return
+
+            # Sortiere nach Sharpe Ratio (risikoadjustierte Rendite)
+            results_sorted = sorted(results, key=lambda x: x['sharpe'], reverse=True)
+
+            # Wähle Top-Szenarien (diversifiziert nach Typ)
+            top_scenarios = self._select_diverse_top_scenarios(results_sorted)
+
+            self.progress_update.emit(100, f"✅ {len(top_scenarios)} optimale Szenarien gefunden")
+            self.results_ready.emit(top_scenarios)
+
+        except Exception as e:
+            import traceback
+            self.error_occurred.emit(f"Monte-Carlo Fehler: {str(e)}\n{traceback.format_exc()}")
+
+    def _quick_simulate(self, step_pct, exit_pct, levels, shares, trade_type):
+        """
+        Schnelle Simulation eines Szenarios gegen historische Daten.
+        Vereinfachte Version für Monte-Carlo (schneller als voller Backtest).
+        """
+        df = self.historical_data
+        if df is None or df.empty:
+            return {'trades': 0, 'pnl': 0, 'std': 0, 'sharpe': 0, 'win_rate': 0}
+
+        # Gruppiere nach Tagen
+        if isinstance(df.index, pd.DatetimeIndex):
+            daily_groups = df.groupby(df.index.date)
+        else:
+            # Fallback: behandle als einzelnen "Tag"
+            daily_groups = [(None, df)]
+
+        all_trade_pnls = []
+
+        for date, day_data in daily_groups:
+            if len(day_data) < 10:
+                continue
+
+            # Startpreis des Tages
+            start_price = float(day_data.iloc[0]['close'])
+
+            # Erstelle Grid-Levels
+            grid_levels = []
+            for lvl in range(1, levels + 1):
+                if trade_type == 'LONG':
+                    entry = start_price * (1 - step_pct * lvl / 100)
+                    exit_price = entry * (1 + exit_pct / 100)
+                else:
+                    entry = start_price * (1 + step_pct * lvl / 100)
+                    exit_price = entry * (1 - exit_pct / 100)
+
+                grid_levels.append({
+                    'entry': entry,
+                    'exit': exit_price,
+                    'filled': False,
+                    'fill_price': None
+                })
+
+            # Simuliere durch den Tag
+            for _, row in day_data.iterrows():
+                price = float(row['close'])
+                low = float(row['low'])
+                high = float(row['high'])
+
+                for level in grid_levels:
+                    if not level['filled']:
+                        # Check Entry
+                        if trade_type == 'LONG' and low <= level['entry']:
+                            level['filled'] = True
+                            level['fill_price'] = level['entry']
+                        elif trade_type == 'SHORT' and high >= level['entry']:
+                            level['filled'] = True
+                            level['fill_price'] = level['entry']
+                    else:
+                        # Check Exit
+                        if trade_type == 'LONG' and high >= level['exit']:
+                            pnl = (level['exit'] - level['fill_price']) * shares
+                            all_trade_pnls.append(pnl)
+                            level['filled'] = False  # Recycle
+                            level['fill_price'] = None
+                        elif trade_type == 'SHORT' and low <= level['exit']:
+                            pnl = (level['fill_price'] - level['exit']) * shares
+                            all_trade_pnls.append(pnl)
+                            level['filled'] = False  # Recycle
+                            level['fill_price'] = None
+
+        # Berechne Metriken
+        if not all_trade_pnls:
+            return {'trades': 0, 'pnl': 0, 'std': 0, 'sharpe': 0, 'win_rate': 0}
+
+        total_pnl = sum(all_trade_pnls)
+        avg_pnl = np.mean(all_trade_pnls)
+        std_pnl = np.std(all_trade_pnls) if len(all_trade_pnls) > 1 else 1
+        sharpe = avg_pnl / std_pnl if std_pnl > 0 else 0
+        win_rate = sum(1 for p in all_trade_pnls if p > 0) / len(all_trade_pnls) * 100
+
+        return {
+            'trades': len(all_trade_pnls),
+            'pnl': total_pnl,
+            'std': std_pnl,
+            'sharpe': sharpe,
+            'win_rate': win_rate
+        }
+
+    def _select_diverse_top_scenarios(self, sorted_results):
+        """
+        Wähle Top-Szenarien mit Diversifikation (nicht alle vom gleichen Typ).
+        """
+        top_scenarios = []
+        long_count = 0
+        short_count = 0
+        max_per_type = (self.num_top_scenarios + 1) // 2  # Halb-halb
+
+        for result in sorted_results:
+            if len(top_scenarios) >= self.num_top_scenarios:
+                break
+
+            if result['type'] == 'LONG' and long_count < max_per_type:
+                top_scenarios.append(result)
+                long_count += 1
+            elif result['type'] == 'SHORT' and short_count < max_per_type:
+                top_scenarios.append(result)
+                short_count += 1
+
+        # Falls nicht genug diversifiziert, fülle mit besten auf
+        if len(top_scenarios) < self.num_top_scenarios:
+            for result in sorted_results:
+                if result not in top_scenarios:
+                    top_scenarios.append(result)
+                    if len(top_scenarios) >= self.num_top_scenarios:
+                        break
+
+        return top_scenarios
 
 
 class ScenarioBuilder(QWidget):
@@ -899,11 +1122,64 @@ class AdvancedBacktestWidget(QWidget):
         param_group.setLayout(param_layout)
         voranalyse_layout.addWidget(param_group)
 
-        # Voranalyse starten Button
-        self.voranalyse_btn = QPushButton("🔬 Voranalyse starten")
+        # Buttons für Voranalyse
+        buttons_group = QGroupBox("Analyse starten")
+        apply_groupbox_style(buttons_group)
+        buttons_layout = QVBoxLayout()
+
+        # Voranalyse starten Button (schnell, deterministisch)
+        self.voranalyse_btn = QPushButton("🔬 Schnelle Voranalyse")
         self.voranalyse_btn.setStyleSheet(PRIMARY_BUTTON_STYLE)
+        self.voranalyse_btn.setToolTip("Schnelle deterministische Analyse (~1 Sek.)\nGeneriert 6 Szenarien basierend auf Statistiken")
         self.voranalyse_btn.clicked.connect(self.run_voranalyse)
-        voranalyse_layout.addWidget(self.voranalyse_btn)
+        buttons_layout.addWidget(self.voranalyse_btn)
+
+        # Monte-Carlo Button (langsamer, stochastisch)
+        self.monte_carlo_btn = QPushButton("🎲 Monte-Carlo Analyse")
+        self.monte_carlo_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #6c5ce7;
+                color: white;
+                border: none;
+                padding: 8px 16px;
+                border-radius: 4px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #5b4cdb;
+            }
+            QPushButton:disabled {
+                background-color: #b2bec3;
+            }
+        """)
+        self.monte_carlo_btn.setToolTip("Monte-Carlo Simulation (~10-30 Sek.)\n5000 Iterationen, findet optimale Parameter via Sharpe Ratio")
+        self.monte_carlo_btn.clicked.connect(self.run_monte_carlo)
+        buttons_layout.addWidget(self.monte_carlo_btn)
+
+        # Monte-Carlo Progress Bar
+        self.mc_progress_bar = QProgressBar()
+        self.mc_progress_bar.setStyleSheet("""
+            QProgressBar {
+                border: 1px solid #dfe6e9;
+                border-radius: 4px;
+                text-align: center;
+                height: 20px;
+            }
+            QProgressBar::chunk {
+                background-color: #6c5ce7;
+                border-radius: 3px;
+            }
+        """)
+        self.mc_progress_bar.setVisible(False)
+        buttons_layout.addWidget(self.mc_progress_bar)
+
+        # Monte-Carlo Status Label
+        self.mc_status_label = QLabel("")
+        self.mc_status_label.setStyleSheet("color: #6c5ce7; font-size: 11px;")
+        buttons_layout.addWidget(self.mc_status_label)
+
+        buttons_group.setLayout(buttons_layout)
+        voranalyse_layout.addWidget(buttons_group)
 
         # Statistik-Tabelle
         stats_group = QGroupBox("Kerzen-Statistiken")
@@ -1726,6 +2002,151 @@ class AdvancedBacktestWidget(QWidget):
         self.update_status(f"✅ Voranalyse abgeschlossen - {added_count} KI-Szenarien generiert")
         self.log(f"KI generierte {added_count} optimierte Szenarien basierend auf Statistiken:")
         self.log(f"   Step-Range: {step_aggressive}-{step_conservative}%, Exit-Range: {exit_aggressive}-{exit_conservative}%")
+
+    def run_monte_carlo(self):
+        """Starte Monte-Carlo Simulation für optimale Szenario-Findung"""
+        # Prüfe ob Daten und Voranalyse vorhanden
+        if self.historical_data is None:
+            QMessageBox.warning(
+                self,
+                "Keine Daten",
+                "Bitte lade zuerst historische Daten im Setup-Tab!"
+            )
+            return
+
+        if self.voranalyse_stats is None:
+            # Führe erst Voranalyse durch (ohne KI-Generierung)
+            self._run_voranalyse_stats_only()
+            if self.voranalyse_stats is None:
+                return
+
+        # UI Update
+        self.monte_carlo_btn.setEnabled(False)
+        self.voranalyse_btn.setEnabled(False)
+        self.mc_progress_bar.setVisible(True)
+        self.mc_progress_bar.setValue(0)
+        self.mc_status_label.setText("🎲 Starte Monte-Carlo...")
+
+        # Parameter sammeln
+        params = {
+            'shares': self.ki_shares_spin.value(),
+            'min_levels': self.ki_min_levels_spin.value(),
+            'max_levels': self.ki_max_levels_spin.value(),
+            'min_profit_cents': self.min_profit_cents_spin.value(),
+            'max_scenarios': self.ki_max_scenarios_spin.value(),
+            'iterations': 5000  # Kann später konfigurierbar gemacht werden
+        }
+
+        # Starte Worker
+        self.mc_worker = MonteCarloWorker(
+            self.historical_data,
+            self.voranalyse_stats,
+            params
+        )
+        self.mc_worker.progress_update.connect(self._on_mc_progress)
+        self.mc_worker.results_ready.connect(self._on_mc_results)
+        self.mc_worker.error_occurred.connect(self._on_mc_error)
+        self.mc_worker.start()
+
+        self.log("🎲 Monte-Carlo Simulation gestartet (5000 Iterationen)...")
+
+    def _run_voranalyse_stats_only(self):
+        """Führe nur die Statistik-Berechnung durch (ohne KI-Szenarien)"""
+        df = self.historical_data
+        if isinstance(df, dict):
+            df = pd.DataFrame(df)
+
+        if df.empty:
+            return
+
+        try:
+            # Berechne Kerzen-Range
+            df['candle_range_pct'] = ((df['high'] - df['low']) / df['low']) * 100
+
+            # Berechne Tages-Ranges
+            if isinstance(df.index, pd.DatetimeIndex):
+                daily_groups = df.groupby(df.index.date)
+                daily_highs = daily_groups['high'].max()
+                daily_lows = daily_groups['low'].min()
+                daily_ranges_pct = ((daily_highs - daily_lows) / daily_lows) * 100
+            else:
+                daily_ranges_pct = df['candle_range_pct']
+
+            # Typischer Rebound
+            bullish_mask = df['close'] > df['open']
+            if bullish_mask.any():
+                bullish_rebounds = ((df.loc[bullish_mask, 'close'] - df.loc[bullish_mask, 'low']) /
+                                   df.loc[bullish_mask, 'low']) * 100
+                typical_rebound = bullish_rebounds.mean()
+            else:
+                typical_rebound = df['candle_range_pct'].mean() * 0.5
+
+            self.voranalyse_stats = {
+                'symbol': self.symbol_edit.text(),
+                'tages_range_avg': daily_ranges_pct.mean(),
+                'kerzen_range_avg': df['candle_range_pct'].mean(),
+                'typical_rebound': typical_rebound,
+                'avg_price': df['close'].mean()
+            }
+
+        except Exception as e:
+            self.log(f"Fehler bei Statistik-Berechnung: {e}")
+            self.voranalyse_stats = None
+
+    def _on_mc_progress(self, progress: int, message: str):
+        """Callback für Monte-Carlo Progress Updates"""
+        self.mc_progress_bar.setValue(progress)
+        self.mc_status_label.setText(message)
+
+    def _on_mc_results(self, results: list):
+        """Callback wenn Monte-Carlo Ergebnisse fertig"""
+        self.monte_carlo_btn.setEnabled(True)
+        self.voranalyse_btn.setEnabled(True)
+        self.mc_progress_bar.setVisible(False)
+
+        if not results:
+            self.mc_status_label.setText("❌ Keine Ergebnisse")
+            return
+
+        symbol = self.symbol_edit.text() or "XXX"
+        added_count = 0
+
+        # Füge Monte-Carlo Szenarien hinzu
+        for i, result in enumerate(results):
+            # Szenario-Name mit Ranking
+            type_suffix = "L" if result['type'] == 'LONG' else "S"
+            name = f"MC_top{i+1}_{type_suffix}_{symbol}"
+
+            self.scenarios[name] = {
+                'type': result['type'],
+                'shares': result['shares'],
+                'step': result['step'],
+                'exit': result['exit'],
+                'levels': result['levels']
+            }
+            self.scenario_origins[name] = "KI"
+            added_count += 1
+
+            # Log Details
+            self.log(f"   MC #{i+1}: {result['type']} Step={result['step']}% Exit={result['exit']}% "
+                    f"Levels={result['levels']} Sharpe={result['sharpe']:.2f} WinRate={result['win_rate']:.1f}%")
+
+        # Update UI
+        self.update_scenarios_table()
+        self.scenario_count_label.setText(f"{len(self.scenarios)} Szenarien")
+        self.mc_status_label.setText(f"✅ {added_count} optimale Szenarien gefunden")
+        self.update_status(f"✅ Monte-Carlo abgeschlossen - {added_count} Szenarien mit bestem Sharpe Ratio")
+        self.log(f"Monte-Carlo: {added_count} optimierte Szenarien hinzugefügt (sortiert nach Sharpe Ratio)")
+
+    def _on_mc_error(self, error_msg: str):
+        """Callback bei Monte-Carlo Fehler"""
+        self.monte_carlo_btn.setEnabled(True)
+        self.voranalyse_btn.setEnabled(True)
+        self.mc_progress_bar.setVisible(False)
+        self.mc_status_label.setText("❌ Fehler")
+        self.update_status(f"❌ Monte-Carlo Fehler")
+        self.log(f"Monte-Carlo ERROR: {error_msg}")
+        QMessageBox.critical(self, "Monte-Carlo Fehler", error_msg)
 
     def update_scenarios_table(self):
         """Aktualisiere Szenarien-Tabelle mit Ursprung-Spalte"""
