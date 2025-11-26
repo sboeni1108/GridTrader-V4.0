@@ -217,8 +217,8 @@ class TradingBotWidget(QWidget):
         # Key: exit_order_id, Value: trade_data dict
         self._pending_exit_trades: Dict[str, dict] = {}
 
-        # IBKR Connection (verwendet Shared Connection vom Live Trading Tab)
-        self.live_trading_enabled = False
+        # IBKR Connection (verwendet Shared Connection vom IBKR Connection Tab)
+        self.order_execution_enabled = False
         self.market_data_timer: Optional[QTimer] = None
         self.connection_check_timer: Optional[QTimer] = None
         self.status_check_task = None  # Async Task für Order Status Checking
@@ -502,7 +502,7 @@ class TradingBotWidget(QWidget):
                 self.ibkr_status_label.setText("Verbunden (Service)")
                 self.ibkr_status_label.setStyleSheet("font-size: 12px; font-weight: bold; color: #0a0;")
             if hasattr(self, 'live_trading_cb'):
-                self.live_trading_cb.setEnabled(True)
+                self.order_execution_cb.setEnabled(True)
 
             # Stoppe Legacy Market Data Timer (falls laufend)
             if self.market_data_timer:
@@ -525,9 +525,9 @@ class TradingBotWidget(QWidget):
             self.ibkr_status_label.setText("Nicht verbunden")
             self.ibkr_status_label.setStyleSheet("font-size: 12px; font-weight: bold; color: #c00;")
         if hasattr(self, 'live_trading_cb'):
-            self.live_trading_cb.setEnabled(False)
-            self.live_trading_cb.setChecked(False)
-            self.live_trading_enabled = False
+            self.order_execution_cb.setEnabled(False)
+            self.order_execution_cb.setChecked(False)
+            self.order_execution_enabled = False
 
     def _on_service_connection_lost(self):
         """Callback wenn IBKRService Verbindung verliert"""
@@ -758,7 +758,7 @@ class TradingBotWidget(QWidget):
             self.log_message("IBKRService nicht verbunden - keine Order platziert", "ERROR")
             return
 
-        if not self.live_trading_enabled:
+        if not self.order_execution_enabled:
             self.log_message(
                 f"ORDER (Simulation): {level['type']} {level.get('shares', 100)}x {level['symbol']}",
                 "TRADE"
@@ -819,7 +819,7 @@ class TradingBotWidget(QWidget):
         if not self._ibkr_service or not self._service_connected:
             return
 
-        if not self.live_trading_enabled:
+        if not self.order_execution_enabled:
             return
 
         try:
@@ -1658,11 +1658,11 @@ class TradingBotWidget(QWidget):
         self.ibkr_status_label.setStyleSheet("font-size: 9px; font-weight: bold; color: #c00;")
         grid.addWidget(self.ibkr_status_label, 0, ibkr_col + 1)
 
-        self.live_trading_cb = QCheckBox("Live Trading")
-        self.live_trading_cb.setEnabled(False)
-        self.live_trading_cb.setStyleSheet("font-size: 9px;")
-        self.live_trading_cb.toggled.connect(self.toggle_live_trading)
-        grid.addWidget(self.live_trading_cb, 1, ibkr_col, 1, 2)
+        self.order_execution_cb = QCheckBox("Order-Ausführung")
+        self.order_execution_cb.setEnabled(False)
+        self.order_execution_cb.setStyleSheet("font-size: 9px;")
+        self.order_execution_cb.toggled.connect(self.toggle_order_execution)
+        grid.addWidget(self.order_execution_cb, 1, ibkr_col, 1, 2)
 
         # Order Type Selection (kompakt)
         self.order_type_group = QButtonGroup(self)
@@ -2871,23 +2871,24 @@ class TradingBotWidget(QWidget):
 
             self.ny_time_label.setText(f"NY Zeit: {ny_time} ({day_name}) - {status}")
 
-    def toggle_live_trading(self, enabled: bool):
-        """Aktiviere/Deaktiviere Live-Trading"""
+    def toggle_order_execution(self, enabled: bool):
+        """Aktiviere/Deaktiviere Order-Ausführung (sendet Orders an IBKR)"""
         if enabled:
             # Sicherheitswarnung
             reply = QMessageBox.warning(
                 self,
-                "⚠️ Live Trading aktivieren",
-                "WARNUNG: Du aktivierst jetzt Live-Trading!\n\n"
+                "⚠️ Order-Ausführung aktivieren",
+                "WARNUNG: Du aktivierst jetzt die Order-Ausführung!\n\n"
                 "Der Bot wird echte Orders an IBKR senden.\n"
-                "Stelle sicher, dass du Paper-Trading verwendest zum Testen.\n\n"
+                "Ob Live- oder Paper-Trading hängt von deiner IBKR-Verbindung ab\n"
+                "(TWS Live = echtes Geld, TWS Paper = Simulation).\n\n"
                 "Wirklich aktivieren?",
                 QMessageBox.Yes | QMessageBox.No
             )
 
             if reply == QMessageBox.Yes:
-                self.live_trading_enabled = True
-                self.log_message("🟢 LIVE TRADING AKTIVIERT", "WARNING")
+                self.order_execution_enabled = True
+                self.log_message("🟢 ORDER-AUSFÜHRUNG AKTIVIERT", "WARNING")
 
                 # Starte Order Status Checker Timer
                 if not self.status_check_task:
@@ -2896,10 +2897,10 @@ class TradingBotWidget(QWidget):
                     self.status_check_task.start(1000)  # Jede Sekunde
                     self.log_message("Order Status Checker gestartet", "INFO")
             else:
-                self.live_trading_cb.setChecked(False)
+                self.order_execution_cb.setChecked(False)
         else:
-            self.live_trading_enabled = False
-            self.log_message("Live Trading deaktiviert", "INFO")
+            self.order_execution_enabled = False
+            self.log_message("Order-Ausführung deaktiviert", "INFO")
 
             # Stoppe Order Status Checker Timer
             if self.status_check_task:
@@ -3547,13 +3548,13 @@ class TradingBotWidget(QWidget):
         """
         print(f"DEBUG BOT: place_ibkr_order_via_service called - type={order_type}, limit_price={limit_price}")
 
-        if not self.live_trading_enabled:
+        if not self.order_execution_enabled:
             self.log_message(f"ORDER (Simulation): {side} {quantity}x {symbol}", "TRADE")
             return None
 
         # Prüfe IBKRService Verbindung
         if not self._ibkr_service or not self._service_connected:
-            self.log_message("IBKRService nicht verbunden - Verbinde im Live Trading Tab", "ERROR")
+            self.log_message("IBKRService nicht verbunden - Verbinde im IBKR Tab", "ERROR")
             return None
 
         try:
@@ -4016,7 +4017,7 @@ class TradingBotWidget(QWidget):
         """Prüft Status aller pending orders (wird von QTimer aufgerufen)"""
         from gridtrader.domain.models.order import OrderStatus
 
-        if not self.live_trading_enabled:
+        if not self.order_execution_enabled:
             return
 
         try:

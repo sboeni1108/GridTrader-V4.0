@@ -327,7 +327,6 @@ class KIControllerThread(QThread):
         self.state.reset_daily_stats()
 
         self._log(f"Modus: {self.config.mode.value}", "INFO")
-        self._log(f"Paper Trading: {'Ja' if self.config.paper_trading_mode else 'NEIN - LIVE!'}", "INFO")
 
         # Historische Daten für Pattern-Matching laden
         self._load_historical_data_for_analysis()
