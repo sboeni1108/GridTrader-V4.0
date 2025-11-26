@@ -171,12 +171,22 @@ class TradingBotWidget(QWidget):
     # Signal wenn Szenario importiert werden soll
     scenario_imported = Signal(dict)
 
+    # Signal für KI-Controller: Neue Waisen-Position entstanden
+    orphan_position_created = Signal(dict)
+
+    # Signal für KI-Controller: Waisen-Position geschlossen
+    orphan_position_closed = Signal(dict)
+
     def __init__(self):
         super().__init__()
         self.available_scenarios = {}  # Importierte Szenarien
         self.waiting_levels = []  # Aktivierte Levels, die auf Einstieg warten
         self.active_levels = []  # Levels mit offenen Positionen
         self.pending_orders = {}  # Track pending orders
+
+        # NEU: Waisen-Positionen (Positionen ohne zugehöriges Level)
+        # Entstehen wenn ein aktives Level deaktiviert wird, aber Position offen bleibt
+        self.orphan_positions = []
 
         # Order-Tracking für Level-Protection
         self._orders_placed_for_levels = set()  # HIER initialisieren!
@@ -217,8 +227,8 @@ class TradingBotWidget(QWidget):
         # Key: exit_order_id, Value: trade_data dict
         self._pending_exit_trades: Dict[str, dict] = {}
 
-        # IBKR Connection (verwendet Shared Connection vom Live Trading Tab)
-        self.live_trading_enabled = False
+        # IBKR Connection (verwendet Shared Connection vom IBKR Connection Tab)
+        self.order_execution_enabled = False
         self.market_data_timer: Optional[QTimer] = None
         self.connection_check_timer: Optional[QTimer] = None
         self.status_check_task = None  # Async Task für Order Status Checking
@@ -502,7 +512,7 @@ class TradingBotWidget(QWidget):
                 self.ibkr_status_label.setText("Verbunden (Service)")
                 self.ibkr_status_label.setStyleSheet("font-size: 12px; font-weight: bold; color: #0a0;")
             if hasattr(self, 'live_trading_cb'):
-                self.live_trading_cb.setEnabled(True)
+                self.order_execution_cb.setEnabled(True)
 
             # Stoppe Legacy Market Data Timer (falls laufend)
             if self.market_data_timer:
@@ -525,9 +535,9 @@ class TradingBotWidget(QWidget):
             self.ibkr_status_label.setText("Nicht verbunden")
             self.ibkr_status_label.setStyleSheet("font-size: 12px; font-weight: bold; color: #c00;")
         if hasattr(self, 'live_trading_cb'):
-            self.live_trading_cb.setEnabled(False)
-            self.live_trading_cb.setChecked(False)
-            self.live_trading_enabled = False
+            self.order_execution_cb.setEnabled(False)
+            self.order_execution_cb.setChecked(False)
+            self.order_execution_enabled = False
 
     def _on_service_connection_lost(self):
         """Callback wenn IBKRService Verbindung verliert"""
@@ -758,7 +768,7 @@ class TradingBotWidget(QWidget):
             self.log_message("IBKRService nicht verbunden - keine Order platziert", "ERROR")
             return
 
-        if not self.live_trading_enabled:
+        if not self.order_execution_enabled:
             self.log_message(
                 f"ORDER (Simulation): {level['type']} {level.get('shares', 100)}x {level['symbol']}",
                 "TRADE"
@@ -819,7 +829,7 @@ class TradingBotWidget(QWidget):
         if not self._ibkr_service or not self._service_connected:
             return
 
-        if not self.live_trading_enabled:
+        if not self.order_execution_enabled:
             return
 
         try:
@@ -1658,11 +1668,11 @@ class TradingBotWidget(QWidget):
         self.ibkr_status_label.setStyleSheet("font-size: 9px; font-weight: bold; color: #c00;")
         grid.addWidget(self.ibkr_status_label, 0, ibkr_col + 1)
 
-        self.live_trading_cb = QCheckBox("Live Trading")
-        self.live_trading_cb.setEnabled(False)
-        self.live_trading_cb.setStyleSheet("font-size: 9px;")
-        self.live_trading_cb.toggled.connect(self.toggle_live_trading)
-        grid.addWidget(self.live_trading_cb, 1, ibkr_col, 1, 2)
+        self.order_execution_cb = QCheckBox("Order-Ausführung")
+        self.order_execution_cb.setEnabled(False)
+        self.order_execution_cb.setStyleSheet("font-size: 9px;")
+        self.order_execution_cb.toggled.connect(self.toggle_order_execution)
+        grid.addWidget(self.order_execution_cb, 1, ibkr_col, 1, 2)
 
         # Order Type Selection (kompakt)
         self.order_type_group = QButtonGroup(self)
@@ -2681,6 +2691,68 @@ class TradingBotWidget(QWidget):
             self.active_count_label.setText(f"{self.active_table.rowCount()} aktive Positionen")
             self.update_status(f"{len(selected_rows)} Position(en) geschlossen")
 
+    def deactivate_level_keep_position(self, level_id: str, reason: str = "KI-Controller Entscheidung") -> bool:
+        """
+        Deaktiviert ein aktives Level, behält aber die Position als Waisen-Position.
+
+        Wird vom KI-Controller verwendet, wenn er ein Level deaktivieren will,
+        aber die Position noch offen bleiben soll (für späteren Gewinnmitnahme).
+
+        Args:
+            level_id: ID des Levels (z.B. "scenario_name_L1")
+            reason: Grund für die Deaktivierung
+
+        Returns:
+            True wenn erfolgreich
+        """
+        # Finde das Level
+        level_idx = None
+        level_data = None
+
+        for idx, level in enumerate(self.active_levels):
+            # Level-ID kann scenario_name + level_num sein
+            current_id = f"{level.get('scenario_name', '')}_{level.get('level_num', '')}"
+            if current_id == level_id or level.get('level_id') == level_id:
+                level_idx = idx
+                level_data = level
+                break
+
+        if level_data is None:
+            self.log_message(f"Level {level_id} nicht in aktiven Levels gefunden", "WARNING")
+            return False
+
+        # Erstelle Waisen-Position
+        orphan = self.create_orphan_position(level_data, reason)
+
+        # Entferne Level aus active_levels
+        del self.active_levels[level_idx]
+
+        # UI aktualisieren
+        self.update_active_levels_display()
+
+        self.log_message(
+            f"🔄 Level {level_id} deaktiviert → Position {orphan['id']} als Waise übernommen",
+            "INFO"
+        )
+
+        return True
+
+    def get_active_level_by_id(self, level_id: str) -> dict:
+        """
+        Gibt ein aktives Level anhand seiner ID zurück.
+
+        Args:
+            level_id: ID des Levels
+
+        Returns:
+            Level-Daten oder None
+        """
+        for level in self.active_levels:
+            current_id = f"{level.get('scenario_name', '')}_{level.get('level_num', '')}"
+            if current_id == level_id or level.get('level_id') == level_id:
+                return level
+        return None
+
     def remove_selected(self):
         """Entferne ausgewähltes Szenario"""
         current = self.scenarios_tree.currentItem()
@@ -2871,23 +2943,24 @@ class TradingBotWidget(QWidget):
 
             self.ny_time_label.setText(f"NY Zeit: {ny_time} ({day_name}) - {status}")
 
-    def toggle_live_trading(self, enabled: bool):
-        """Aktiviere/Deaktiviere Live-Trading"""
+    def toggle_order_execution(self, enabled: bool):
+        """Aktiviere/Deaktiviere Order-Ausführung (sendet Orders an IBKR)"""
         if enabled:
             # Sicherheitswarnung
             reply = QMessageBox.warning(
                 self,
-                "⚠️ Live Trading aktivieren",
-                "WARNUNG: Du aktivierst jetzt Live-Trading!\n\n"
+                "⚠️ Order-Ausführung aktivieren",
+                "WARNUNG: Du aktivierst jetzt die Order-Ausführung!\n\n"
                 "Der Bot wird echte Orders an IBKR senden.\n"
-                "Stelle sicher, dass du Paper-Trading verwendest zum Testen.\n\n"
+                "Ob Live- oder Paper-Trading hängt von deiner IBKR-Verbindung ab\n"
+                "(TWS Live = echtes Geld, TWS Paper = Simulation).\n\n"
                 "Wirklich aktivieren?",
                 QMessageBox.Yes | QMessageBox.No
             )
 
             if reply == QMessageBox.Yes:
-                self.live_trading_enabled = True
-                self.log_message("🟢 LIVE TRADING AKTIVIERT", "WARNING")
+                self.order_execution_enabled = True
+                self.log_message("🟢 ORDER-AUSFÜHRUNG AKTIVIERT", "WARNING")
 
                 # Starte Order Status Checker Timer
                 if not self.status_check_task:
@@ -2896,10 +2969,10 @@ class TradingBotWidget(QWidget):
                     self.status_check_task.start(1000)  # Jede Sekunde
                     self.log_message("Order Status Checker gestartet", "INFO")
             else:
-                self.live_trading_cb.setChecked(False)
+                self.order_execution_cb.setChecked(False)
         else:
-            self.live_trading_enabled = False
-            self.log_message("Live Trading deaktiviert", "INFO")
+            self.order_execution_enabled = False
+            self.log_message("Order-Ausführung deaktiviert", "INFO")
 
             # Stoppe Order Status Checker Timer
             if self.status_check_task:
@@ -3547,13 +3620,13 @@ class TradingBotWidget(QWidget):
         """
         print(f"DEBUG BOT: place_ibkr_order_via_service called - type={order_type}, limit_price={limit_price}")
 
-        if not self.live_trading_enabled:
+        if not self.order_execution_enabled:
             self.log_message(f"ORDER (Simulation): {side} {quantity}x {symbol}", "TRADE")
             return None
 
         # Prüfe IBKRService Verbindung
         if not self._ibkr_service or not self._service_connected:
-            self.log_message("IBKRService nicht verbunden - Verbinde im Live Trading Tab", "ERROR")
+            self.log_message("IBKRService nicht verbunden - Verbinde im IBKR Tab", "ERROR")
             return None
 
         try:
@@ -4016,7 +4089,7 @@ class TradingBotWidget(QWidget):
         """Prüft Status aller pending orders (wird von QTimer aufgerufen)"""
         from gridtrader.domain.models.order import OrderStatus
 
-        if not self.live_trading_enabled:
+        if not self.order_execution_enabled:
             return
 
         try:
@@ -4116,8 +4189,269 @@ class TradingBotWidget(QWidget):
         except Exception as e:
             self.log_message(f"Order Status Checker Fehler: {e}", "ERROR")
 
+    # ==================== WAISEN-POSITIONEN (ORPHAN POSITIONS) ====================
 
- 
+    def create_orphan_position(self, level_data: dict, reason: str = "Level deaktiviert") -> dict:
+        """
+        Erstellt eine Waisen-Position aus einem aktiven Level.
+
+        Wird aufgerufen wenn:
+        - KI-Controller ein aktives Level deaktiviert
+        - User ein aktives Level manuell entfernt (ohne Position zu schließen)
+
+        Args:
+            level_data: Das aktive Level mit Position-Informationen
+            reason: Grund für die Entstehung der Waisen-Position
+
+        Returns:
+            Die erstellte Waisen-Position
+        """
+        from datetime import datetime
+
+        orphan = {
+            'id': f"orphan_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{level_data.get('symbol', 'UNK')}",
+            'symbol': level_data.get('symbol', ''),
+            'side': level_data.get('type', 'LONG'),  # LONG oder SHORT
+            'shares': level_data.get('shares', 0),
+            'entry_price': level_data.get('fill_price', level_data.get('entry_price', 0)),
+            'entry_time': level_data.get('entry_time', datetime.now()),
+            'created_at': datetime.now(),
+            'reason': reason,
+
+            # Original Level-Info für Tracking
+            'original_scenario': level_data.get('scenario_name', ''),
+            'original_level_num': level_data.get('level_num', 0),
+
+            # Status
+            'status': 'open',  # open, closing, closed
+            'current_price': None,
+            'unrealized_pnl': None,
+
+            # Für KI-Controller
+            'min_profit_cents': 3,  # Mindestgewinn in Cent pro Aktie
+        }
+
+        self.orphan_positions.append(orphan)
+
+        self.log_message(
+            f"🔶 WAISEN-POSITION erstellt: {orphan['shares']}x {orphan['symbol']} {orphan['side']} @ ${orphan['entry_price']:.2f} ({reason})",
+            "WARNING"
+        )
+
+        # Signal für KI-Controller
+        self.orphan_position_created.emit(orphan)
+
+        return orphan
+
+    def close_orphan_position(self, orphan_id: str, close_price: float = None) -> bool:
+        """
+        Schließt eine Waisen-Position durch Platzierung einer LIMIT-Order.
+
+        Args:
+            orphan_id: ID der Waisen-Position
+            close_price: Optionaler Close-Preis für Limit-Order (falls None: current_price)
+
+        Returns:
+            True wenn Order platziert wurde
+        """
+        # Finde die Position
+        orphan = None
+        orphan_idx = None
+        for idx, pos in enumerate(self.orphan_positions):
+            if pos['id'] == orphan_id:
+                orphan = pos
+                orphan_idx = idx
+                break
+
+        if not orphan:
+            self.log_message(f"Waisen-Position {orphan_id} nicht gefunden", "ERROR")
+            return False
+
+        if orphan['status'] != 'open':
+            self.log_message(f"Waisen-Position {orphan_id} ist nicht offen (Status: {orphan['status']})", "WARNING")
+            return False
+
+        # Order-Richtung bestimmen
+        symbol = orphan['symbol']
+        shares = orphan['shares']
+        side = orphan['side']
+
+        # Gegenteil der Position
+        if side == 'LONG':
+            order_action = 'SELL'
+        else:
+            order_action = 'BUY'
+
+        # Prüfe ob Order-Ausführung aktiviert ist
+        if not self.order_execution_enabled:
+            self.log_message(
+                f"⚠️ Order-Ausführung deaktiviert - Waisen-Position {orphan_id} nicht geschlossen",
+                "WARNING"
+            )
+            return False
+
+        # Prüfe IBKR-Verbindung
+        if not self._ibkr_service or not self._service_connected:
+            self.log_message("IBKRService nicht verbunden", "ERROR")
+            return False
+
+        try:
+            # Markiere als "closing"
+            orphan['status'] = 'closing'
+
+            # Bestimme Limit-Preis: Parameter > current_price > entry_price als Fallback
+            limit_price = close_price or orphan.get('current_price') or orphan.get('entry_price')
+
+            if not limit_price:
+                self.log_message(f"Kein Preis für Limit-Order verfügbar (orphan_id: {orphan_id})", "ERROR")
+                orphan['status'] = 'open'  # Reset status
+                return False
+
+            # Platziere LIMIT-Order (NICHT Market!)
+            from gridtrader.domain.models.order import Order, OrderSide, OrderType
+
+            order = Order(
+                symbol=symbol,
+                side=OrderSide.SELL if order_action == 'SELL' else OrderSide.BUY,
+                quantity=shares,
+                order_type=OrderType.LIMIT,
+                limit_price=limit_price,
+            )
+
+            # Callback für Fill registrieren
+            def on_orphan_fill(fill_price, filled_qty, commission):
+                self._handle_orphan_position_closed(orphan_id, fill_price, commission)
+
+            order_id = self._ibkr_service.place_order(
+                order,
+                on_fill=on_orphan_fill
+            )
+
+            self.log_message(
+                f"📤 Schließe Waisen-Position: LIMIT {order_action} {shares}x {symbol} @ ${limit_price:.2f} (Order: {order_id})",
+                "INFO"
+            )
+
+            return True
+
+        except Exception as e:
+            orphan['status'] = 'open'  # Rollback
+            self.log_message(f"Fehler beim Schließen der Waisen-Position: {e}", "ERROR")
+            return False
+
+    def _handle_orphan_position_closed(self, orphan_id: str, fill_price: float, commission: float):
+        """Callback wenn Waisen-Position geschlossen wurde"""
+        from datetime import datetime
+
+        # Finde die Position
+        orphan = None
+        orphan_idx = None
+        for idx, pos in enumerate(self.orphan_positions):
+            if pos['id'] == orphan_id:
+                orphan = pos
+                orphan_idx = idx
+                break
+
+        if not orphan:
+            return
+
+        # Berechne P&L
+        entry_price = orphan['entry_price']
+        shares = orphan['shares']
+        side = orphan['side']
+
+        if side == 'LONG':
+            gross_pnl = (fill_price - entry_price) * shares
+        else:
+            gross_pnl = (entry_price - fill_price) * shares
+
+        net_pnl = gross_pnl - commission
+
+        # Update Stats
+        self.daily_stats['realized_pnl'] += net_pnl
+        self.daily_stats['total_pnl'] = self.daily_stats['realized_pnl'] + self.daily_stats.get('unrealized_pnl', 0)
+        self.daily_stats['total_commissions'] += commission
+
+        # Markiere als geschlossen
+        orphan['status'] = 'closed'
+        orphan['close_price'] = fill_price
+        orphan['close_time'] = datetime.now()
+        orphan['realized_pnl'] = net_pnl
+        orphan['commission'] = commission
+
+        self.log_message(
+            f"✅ Waisen-Position geschlossen: {orphan['symbol']} @ ${fill_price:.2f} | "
+            f"P&L: ${net_pnl:.2f} (Brutto: ${gross_pnl:.2f}, Komm: ${commission:.2f})",
+            "SUCCESS" if net_pnl > 0 else "WARNING"
+        )
+
+        # Signal für KI-Controller
+        self.orphan_position_closed.emit(orphan)
+
+        # Entferne aus Liste
+        if orphan_idx is not None:
+            del self.orphan_positions[orphan_idx]
+
+        # Update UI
+        self.update_statistics_display()
+
+    def get_orphan_positions(self) -> list:
+        """
+        Gibt alle offenen Waisen-Positionen zurück.
+        Wird vom KI-Controller verwendet.
+        """
+        return [pos for pos in self.orphan_positions if pos['status'] == 'open']
+
+    def update_orphan_position_prices(self, market_prices: dict):
+        """
+        Aktualisiert die aktuellen Preise der Waisen-Positionen.
+
+        Args:
+            market_prices: Dict {symbol: current_price}
+        """
+        for orphan in self.orphan_positions:
+            if orphan['status'] != 'open':
+                continue
+
+            symbol = orphan['symbol']
+            if symbol in market_prices:
+                current_price = market_prices[symbol]
+                orphan['current_price'] = current_price
+
+                # Berechne unrealized P&L
+                entry_price = orphan['entry_price']
+                shares = orphan['shares']
+                side = orphan['side']
+
+                if side == 'LONG':
+                    orphan['unrealized_pnl'] = (current_price - entry_price) * shares
+                    orphan['profit_per_share'] = current_price - entry_price
+                else:
+                    orphan['unrealized_pnl'] = (entry_price - current_price) * shares
+                    orphan['profit_per_share'] = entry_price - current_price
+
+    def should_close_orphan(self, orphan: dict) -> bool:
+        """
+        Prüft ob eine Waisen-Position geschlossen werden sollte.
+
+        Kriterien:
+        - Gewinn pro Aktie >= min_profit_cents (default: 3 Cent)
+
+        Args:
+            orphan: Die Waisen-Position
+
+        Returns:
+            True wenn Position geschlossen werden sollte
+        """
+        if orphan['status'] != 'open':
+            return False
+
+        profit_per_share = orphan.get('profit_per_share', 0)
+        min_profit_cents = orphan.get('min_profit_cents', 3) / 100  # Cent -> Dollar
+
+        return profit_per_share >= min_profit_cents
+
+
 """
 Test Entry Point
 """

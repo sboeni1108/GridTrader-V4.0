@@ -287,9 +287,6 @@ class KIControllerConfig:
     log_all_decisions: bool = True   # Alle Entscheidungen loggen
     log_analysis_details: bool = False  # Detaillierte Analyse loggen (verbose)
 
-    # Paper Trading
-    paper_trading_mode: bool = True  # Start immer im Paper Trading!
-
     def to_dict(self) -> Dict[str, Any]:
         """Konvertiert gesamte Config zu Dictionary"""
         return {
@@ -303,7 +300,6 @@ class KIControllerConfig:
             'watchdog_timeout_sec': self.watchdog_timeout_sec,
             'log_all_decisions': self.log_all_decisions,
             'log_analysis_details': self.log_analysis_details,
-            'paper_trading_mode': self.paper_trading_mode,
         }
 
     @classmethod
@@ -320,7 +316,6 @@ class KIControllerConfig:
             watchdog_timeout_sec=data.get('watchdog_timeout_sec', 30),
             log_all_decisions=data.get('log_all_decisions', True),
             log_analysis_details=data.get('log_analysis_details', False),
-            paper_trading_mode=data.get('paper_trading_mode', True),
         )
 
     def save(self, filepath: Optional[Path] = None) -> None:
