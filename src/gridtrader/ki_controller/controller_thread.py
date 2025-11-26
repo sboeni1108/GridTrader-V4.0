@@ -542,6 +542,7 @@ class KIControllerThread(QThread):
 
         Hinweis: Die tatsächlichen Daten kommen vom Trading-Bot via API.
         Diese Methode holt sie ab und verarbeitet sie.
+        Falls keine Live-Daten verfügbar sind, wird mit historischen Daten gearbeitet.
         """
         if self._trading_bot_api is None:
             return
@@ -556,12 +557,34 @@ class KIControllerThread(QThread):
             if 'symbol' in level_data:
                 symbols.add(level_data['symbol'])
 
-        # Marktdaten abrufen
+        if not symbols:
+            return
+
+        # Für jedes Symbol: MarketState initialisieren und Daten holen
         for symbol in symbols:
+            # Stelle sicher dass MarketState existiert
+            with QMutexLocker(self._mutex):
+                if symbol not in self.state.market_states:
+                    self.state.market_states[symbol] = MarketState(symbol=symbol)
+                    self._log(f"MarketState für {symbol} initialisiert", "INFO")
+
+            # Versuche Live-Daten zu holen
             try:
                 data = self._trading_bot_api.get_market_data(symbol)
                 if data:
                     self._process_market_data(symbol, data)
+                else:
+                    # Fallback: Letzter Preis aus Volatility-Monitor (historische Daten)
+                    vol_snapshot = self._volatility_monitor.get_snapshot(symbol)
+                    if vol_snapshot and vol_snapshot.current_price > 0:
+                        fallback_data = {
+                            'price': vol_snapshot.current_price,
+                            'bid': vol_snapshot.current_price * 0.9999,
+                            'ask': vol_snapshot.current_price * 1.0001,
+                            'volume': 0,
+                            'source': 'historical'
+                        }
+                        self._process_market_data(symbol, fallback_data)
             except Exception as e:
                 self._log(f"Fehler bei Marktdaten für {symbol}: {e}", "ERROR")
 
