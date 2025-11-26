@@ -487,12 +487,20 @@ class LevelPool(QObject):
 
         for scenario_name, scenario_data in scenarios.items():
             scenario_id = scenario_data.get('id', str(uuid4())[:8])
-            symbol = scenario_data.get('symbol', 'UNKNOWN')
             levels = scenario_data.get('levels', [])
+
+            # Symbol ermitteln: aus result, aus erstem Level, oder UNKNOWN
+            symbol = (
+                scenario_data.get('result', {}).get('symbol') or
+                scenario_data.get('symbol') or
+                (levels[0].get('symbol') if levels else None) or
+                'UNKNOWN'
+            )
 
             for level_data in levels:
                 level_num = level_data.get('level_num', 0)
-                side = level_data.get('side', 'LONG')
+                # Trading-Bot verwendet 'type' statt 'side'
+                side = level_data.get('side') or level_data.get('type', 'LONG')
 
                 # Eindeutige Level-ID generieren
                 level_id = f"{scenario_id}_{level_num}_{side}"

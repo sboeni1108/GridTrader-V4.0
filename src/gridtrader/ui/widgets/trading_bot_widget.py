@@ -511,7 +511,7 @@ class TradingBotWidget(QWidget):
             if hasattr(self, 'ibkr_status_label'):
                 self.ibkr_status_label.setText("Verbunden (Service)")
                 self.ibkr_status_label.setStyleSheet("font-size: 12px; font-weight: bold; color: #0a0;")
-            if hasattr(self, 'live_trading_cb'):
+            if hasattr(self, 'order_execution_cb'):
                 self.order_execution_cb.setEnabled(True)
 
             # Stoppe Legacy Market Data Timer (falls laufend)
@@ -534,7 +534,7 @@ class TradingBotWidget(QWidget):
         if hasattr(self, 'ibkr_status_label'):
             self.ibkr_status_label.setText("Nicht verbunden")
             self.ibkr_status_label.setStyleSheet("font-size: 12px; font-weight: bold; color: #c00;")
-        if hasattr(self, 'live_trading_cb'):
+        if hasattr(self, 'order_execution_cb'):
             self.order_execution_cb.setEnabled(False)
             self.order_execution_cb.setChecked(False)
             self.order_execution_enabled = False
