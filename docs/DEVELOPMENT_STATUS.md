@@ -250,6 +250,14 @@ src/gridtrader/ui/widgets/
 
 ---
 
+## Controller Modi
+
+| Modus | Beschreibung |
+|-------|-------------|
+| **AUS** | Controller läuft, aber tut nichts (Standby). Daten werden geladen, aber keine Analyse/Entscheidungen. |
+| **Alert** | Controller analysiert und sendet Alerts. User muss jede Aktion manuell bestätigen. |
+| **Autonom** | Controller analysiert UND führt Entscheidungen selbst aus. Levels werden automatisch aktiviert/deaktiviert. |
+
 ## Konfigurierbare Parameter (Defaults)
 
 | Parameter | Default | Beschreibung |
@@ -260,7 +268,9 @@ src/gridtrader/ui/widgets/
 | reevaluation_interval | 30s | Wie oft neu bewerten |
 | min_hold_time | 300s | Min. Haltezeit für Level-Kombination |
 | max_changes_per_hour | 10 | Anti-Overtrading |
-| paper_trading_mode | true | Startet immer im Paper-Modus |
+
+**Hinweis:** Paper Trading Mode wird nicht mehr im KI-Controller konfiguriert.
+Er wird automatisch durch den IBKR Account-Typ bestimmt (Paper Account vs Live Account).
 
 ---
 
@@ -274,6 +284,33 @@ src/gridtrader/ui/widgets/
 ---
 
 ## Changelog
+
+### 2025-11-26 (Bug Fixes & Integration)
+- **IBKR Integration Fixes**
+  - Order-Ausführung Checkbox funktioniert jetzt korrekt bei IBKR-Verbindung
+  - Umbenannt: "Live Trading" → "Order-Ausführung" (Klarheit)
+  - Paper Trading Mode aus KI-Controller Config entfernt (wird durch IBKR Account-Typ bestimmt)
+
+- **Waisen-Positionen (Orphan Positions) System**
+  - Neue Funktion: Wenn aktives Level deaktiviert wird, bleibt Position als "Waise"
+  - KI-Controller überwacht Waisen-Positionen automatisch
+  - Auto-Close bei Gewinn ≥ 3 Cent pro Aktie
+  - Verwendet LIMIT Orders (nicht MARKET) für bessere Ausführung
+
+- **Historische Daten Fallback**
+  - KI-Controller arbeitet jetzt auch ohne Live-IBKR-Daten
+  - Verwendet letzte bekannte Preise aus historischen Daten als Fallback
+  - MarketState wird für alle Symbole im Level-Pool initialisiert
+
+- **Datetime Timezone Fixes**
+  - Behoben: "can't compare offset-naive and offset-aware datetimes"
+  - Alle Timestamps werden jetzt konsistent als timezone-naive behandelt
+  - Betrifft: volume_analyzer.py, volatility_monitor.py, controller_thread.py
+
+- **Level-Pool Symbol Lookup**
+  - Symbol wird jetzt korrekt aus Szenarien extrahiert
+  - Sucht in: result.symbol → scenario.symbol → levels[0].symbol
+  - Side/Type Mapping: Akzeptiert beide Keys ('side' und 'type')
 
 ### 2025-11-26 (Phase 5)
 - **Phase 5 abgeschlossen: Testing & Polish**

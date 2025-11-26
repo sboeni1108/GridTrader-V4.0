@@ -612,10 +612,11 @@ class KIControllerThread(QThread):
 
             ms.last_update = datetime.now()
 
-            # Preis-Historie aktualisieren
-            if symbol not in self._price_history:
-                self._price_history[symbol] = []
-            self._price_history[symbol].append((datetime.now(), float(ms.current_price)))
+            # Preis-Historie aktualisieren (nur wenn Preis vorhanden)
+            if ms.current_price is not None and ms.current_price > 0:
+                if symbol not in self._price_history:
+                    self._price_history[symbol] = []
+                self._price_history[symbol].append((datetime.now(), float(ms.current_price)))
 
             # Nur letzte 1000 Preise behalten
             if len(self._price_history[symbol]) > 1000:
@@ -645,6 +646,11 @@ class KIControllerThread(QThread):
             return
 
         ms = self.state.market_states[symbol]
+
+        # Prüfe ob gültiger Preis vorhanden
+        if ms.current_price is None or ms.current_price <= 0:
+            return
+
         now = datetime.now()
 
         # 1. Volatilitäts-Analyse
@@ -716,7 +722,7 @@ class KIControllerThread(QThread):
         time_snapshot: TimeProfileSnapshot
     ) -> Optional[PatternMatchResult]:
         """Versucht Pattern-Matching und gibt Ergebnis zurück."""
-        if not vol_snapshot or float(ms.current_price) <= 0:
+        if not vol_snapshot or ms.current_price is None or float(ms.current_price) <= 0:
             return None
 
         try:
@@ -935,6 +941,9 @@ class KIControllerThread(QThread):
         - LevelOptimizer für optimale Kombination
         - PricePredictor für Richtungs-Vorhersage
         """
+        # Sicherer Preis-Zugriff
+        if market_state.current_price is None:
+            return []
         current_price = float(market_state.current_price)
 
         if current_price <= 0:
@@ -966,12 +975,16 @@ class KIControllerThread(QThread):
         # 5. Aktuelle aktive Levels in Candidates konvertieren
         current_candidates = []
         for active in current_levels:
+            # Sichere Preis-Konvertierung
+            entry_price = float(active.entry_price) if active.entry_price is not None else 0.0
+            exit_price = float(active.exit_price) if active.exit_price is not None else 0.0
+
             current_candidates.append(LevelCandidate(
                 level_id=active.level_id,
                 symbol=active.symbol,
                 side=active.side,
-                entry_price=float(active.entry_price),
-                exit_price=float(active.exit_price),
+                entry_price=entry_price,
+                exit_price=exit_price,
                 score=active.score,
                 is_recommended=True,
                 distance_pct=0,
@@ -1009,6 +1022,9 @@ class KIControllerThread(QThread):
 
     def _create_market_context(self, symbol: str, ms: MarketState) -> MarketContext:
         """Erstellt MarketContext für den LevelScorer"""
+        # Sicherer Preis-Zugriff
+        current_price = float(ms.current_price) if ms.current_price is not None else 0.0
+
         # Volumen-Daten
         vol_snapshot = self._volume_analyzer.get_snapshot(symbol)
         vol_ratio = vol_snapshot.volume_ratio if vol_snapshot else 1.0
@@ -1021,7 +1037,7 @@ class KIControllerThread(QThread):
         pattern_result = self._pattern_matcher.get_latest_result(symbol) if hasattr(self._pattern_matcher, 'get_latest_result') else None
 
         return MarketContext(
-            current_price=float(ms.current_price),
+            current_price=current_price,
             atr_5=ms.atr_5,
             atr_14=getattr(ms, 'atr_14', ms.atr_5),
             atr_50=getattr(ms, 'atr_50', ms.atr_5),
@@ -1036,6 +1052,9 @@ class KIControllerThread(QThread):
 
     def _create_prediction_context(self, symbol: str, ms: MarketState) -> PredictionContext:
         """Erstellt PredictionContext für den Predictor"""
+        # Sicherer Preis-Zugriff
+        current_price = float(ms.current_price) if ms.current_price is not None else 0.0
+
         vol_snapshot = self._volume_analyzer.get_snapshot(symbol)
         time_snapshot = self._time_profile.get_current_snapshot()
 
@@ -1047,7 +1066,7 @@ class KIControllerThread(QThread):
 
         return PredictionContext(
             symbol=symbol,
-            current_price=float(ms.current_price),
+            current_price=current_price,
             atr_5=ms.atr_5,
             atr_14=getattr(ms, 'atr_14', ms.atr_5),
             volatility_regime=ms.volatility_regime.value,
