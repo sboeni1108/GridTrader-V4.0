@@ -58,7 +58,6 @@ hidden_imports = [
 
     # Data Science
     'numpy',
-    'numpy.core._methods',
     'numpy.lib.format',
     'pandas',
     'pandas.plotting',
@@ -72,7 +71,6 @@ hidden_imports = [
     'pydantic.deprecated',
     'pydantic_settings',
     'pydantic_core',
-    'python_dotenv',
     'dotenv',
     'yaml',
 
@@ -141,6 +139,18 @@ excludes = [
     'ipdb',
     'matplotlib',  # Falls nicht benötigt
     'tkinter',     # Nicht benötigt bei PySide6
+    'qt_material', # Nicht verwendet, verursacht Import-Warnung
+]
+
+# Binärdateien die ausgeschlossen werden sollen (nicht benötigte SQL-Treiber)
+# Diese eliminieren die "Library not found" Warnungen für PostgreSQL, Oracle, etc.
+binaries_exclude = [
+    'qsqlmimer',   # Mimer SQL (MIMAPI64.dll)
+    'qsqlpsql',    # PostgreSQL (LIBPQ.dll)
+    'qsqloci',     # Oracle (OCI.dll)
+    'qsqlibase',   # Firebird/InterBase (fbclient.dll)
+    'qsqlmysql',   # MySQL
+    'qsqlodbc',    # ODBC
 ]
 
 # Analyse der Hauptdatei
@@ -163,6 +173,13 @@ a = Analysis(
     cipher=block_cipher,
     noarchive=False,
 )
+
+# Filtere nicht benötigte SQL-Treiber aus den Binaries
+# Dies eliminiert die "Library not found" Warnungen für PostgreSQL, Oracle, Mimer, etc.
+a.binaries = [
+    (name, path, typ) for name, path, typ in a.binaries
+    if not any(excluded in name.lower() for excluded in binaries_exclude)
+]
 
 # Python-Bytecode zusammenstellen
 pyz = PYZ(
