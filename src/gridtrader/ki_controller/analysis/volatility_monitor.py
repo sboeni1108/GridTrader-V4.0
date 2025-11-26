@@ -227,6 +227,10 @@ class VolatilityMonitor:
         if timestamp is None:
             timestamp = datetime.now()
 
+        # Timezone-naive machen für konsistente Vergleiche
+        if hasattr(timestamp, 'tzinfo') and timestamp.tzinfo is not None:
+            timestamp = timestamp.replace(tzinfo=None)
+
         if symbol not in self._price_history:
             self._price_history[symbol] = deque(maxlen=1000)
 
@@ -342,7 +346,9 @@ class VolatilityMonitor:
         # Finde ältesten Preis innerhalb des Zeitfensters
         old_price = None
         for ts, price in history:
-            if ts >= cutoff:
+            # Timezone-naive machen für Vergleich
+            ts_naive = ts.replace(tzinfo=None) if hasattr(ts, 'tzinfo') and ts.tzinfo else ts
+            if ts_naive >= cutoff:
                 old_price = price
                 break
 

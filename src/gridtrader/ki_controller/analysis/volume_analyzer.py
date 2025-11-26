@@ -152,6 +152,10 @@ class VolumeAnalyzer:
         if timestamp is None:
             timestamp = datetime.now()
 
+        # Timezone-naive machen für konsistente Vergleiche
+        if hasattr(timestamp, 'tzinfo') and timestamp.tzinfo is not None:
+            timestamp = timestamp.replace(tzinfo=None)
+
         # Buffer initialisieren
         if symbol not in self._volume_history:
             self._volume_history[symbol] = deque(maxlen=self._buffer_size)
