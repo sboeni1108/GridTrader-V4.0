@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (
     QSpinBox, QDoubleSpinBox, QTableWidget, QTableWidgetItem,
     QHeaderView, QComboBox, QTextEdit, QProgressBar,
     QTabWidget, QCheckBox, QSplitter, QDateEdit,
-    QMessageBox, QListWidget
+    QMessageBox, QListWidget, QFrame
 )
 from PySide6.QtCore import Qt, Signal, QThread
 from PySide6.QtGui import QFont, QColor
@@ -695,15 +695,16 @@ class AdvancedBacktestWidget(QWidget):
 
     def __init__(self):
         super().__init__()
-        print("🔴 ADVANCED_BACKTEST_WIDGET INITIALISIERT!")  # <-- HIER EINFÜGEN!
+        print("🔴 ADVANCED_BACKTEST_WIDGET INITIALISIERT!")
         self.historical_data = None
         self.scenarios = {}
-        self.backtest_results = {}  # Speichere Ergebnisse (das hast du schon)
-        # Füge diese neuen Zeilen hinzu:
+        self.scenario_origins = {}  # NEU: Speichert Ursprung pro Szenario ("User" oder "KI")
+        self.backtest_results = {}
         self.last_results = None
-        self.last_symbol = None  
+        self.last_symbol = None
         self.last_timeframe = None
         self.last_candle_minutes = None
+        self.voranalyse_stats = None  # NEU: Speichert Voranalyse-Statistiken
         self.init_ui()
         
     def init_ui(self):
@@ -723,9 +724,9 @@ class AdvancedBacktestWidget(QWidget):
         setup_tab = self.create_setup_tab()
         tabs.addTab(setup_tab, "Setup")
 
-        # Tab 2: Szenarien
+        # Tab 2: Voranalyse & Szenarien
         scenarios_tab = self.create_scenarios_tab()
-        tabs.addTab(scenarios_tab, "Szenarien")
+        tabs.addTab(scenarios_tab, "Voranalyse & Szenarien")
 
         # Tab 3: Ergebnisse
         results_tab = self.create_results_tab()
@@ -835,16 +836,111 @@ class AdvancedBacktestWidget(QWidget):
         return widget
         
     def create_scenarios_tab(self):
-        """Szenarien Tab erstellen"""
+        """Voranalyse & Szenarien Tab erstellen mit Splitter-Layout"""
         widget = QWidget()
-        layout = QVBoxLayout()
+        main_layout = QHBoxLayout()
+
+        # Splitter für Links (Voranalyse) und Rechts (Szenarien)
+        splitter = QSplitter(Qt.Horizontal)
+
+        # ============================================
+        # LINKE SEITE: Voranalyse Panel (ca. 1/3)
+        # ============================================
+        voranalyse_widget = QWidget()
+        voranalyse_layout = QVBoxLayout()
+
+        # Voranalyse Header
+        voranalyse_title = QLabel("📊 Voranalyse")
+        apply_title_style(voranalyse_title)
+        voranalyse_layout.addWidget(voranalyse_title)
+
+        # Parameter-Gruppe
+        param_group = QGroupBox("Parameter")
+        apply_groupbox_style(param_group)
+        param_layout = QGridLayout()
+
+        # Minimum Gewinn in Cents
+        param_layout.addWidget(QLabel("Min. Gewinn (Cents):"), 0, 0)
+        self.min_profit_cents_spin = QSpinBox()
+        self.min_profit_cents_spin.setRange(1, 100)
+        self.min_profit_cents_spin.setValue(3)
+        self.min_profit_cents_spin.setSuffix(" ¢")
+        param_layout.addWidget(self.min_profit_cents_spin, 0, 1)
+
+        # Anzahl Aktien
+        param_layout.addWidget(QLabel("Anzahl Aktien:"), 1, 0)
+        self.ki_shares_spin = QSpinBox()
+        self.ki_shares_spin.setRange(50, 1000)
+        self.ki_shares_spin.setSingleStep(50)
+        self.ki_shares_spin.setValue(200)
+        param_layout.addWidget(self.ki_shares_spin, 1, 1)
+
+        # Minimum Levels
+        param_layout.addWidget(QLabel("Min. Levels:"), 2, 0)
+        self.ki_min_levels_spin = QSpinBox()
+        self.ki_min_levels_spin.setRange(2, 20)
+        self.ki_min_levels_spin.setValue(5)
+        param_layout.addWidget(self.ki_min_levels_spin, 2, 1)
+
+        # Maximum Levels
+        param_layout.addWidget(QLabel("Max. Levels:"), 3, 0)
+        self.ki_max_levels_spin = QSpinBox()
+        self.ki_max_levels_spin.setRange(2, 20)
+        self.ki_max_levels_spin.setValue(10)
+        param_layout.addWidget(self.ki_max_levels_spin, 3, 1)
+
+        # Max Szenarien
+        param_layout.addWidget(QLabel("Max. Szenarien:"), 4, 0)
+        self.ki_max_scenarios_spin = QSpinBox()
+        self.ki_max_scenarios_spin.setRange(1, 20)
+        self.ki_max_scenarios_spin.setValue(6)
+        param_layout.addWidget(self.ki_max_scenarios_spin, 4, 1)
+
+        param_group.setLayout(param_layout)
+        voranalyse_layout.addWidget(param_group)
+
+        # Voranalyse starten Button
+        self.voranalyse_btn = QPushButton("🔬 Voranalyse starten")
+        self.voranalyse_btn.setStyleSheet(PRIMARY_BUTTON_STYLE)
+        self.voranalyse_btn.clicked.connect(self.run_voranalyse)
+        voranalyse_layout.addWidget(self.voranalyse_btn)
+
+        # Statistik-Tabelle
+        stats_group = QGroupBox("Kerzen-Statistiken")
+        apply_groupbox_style(stats_group)
+        stats_layout = QVBoxLayout()
+
+        self.voranalyse_table = QTableWidget()
+        self.voranalyse_table.setColumnCount(2)
+        self.voranalyse_table.setHorizontalHeaderLabels(["Metrik", "Wert"])
+        self.voranalyse_table.horizontalHeader().setStretchLastSection(True)
+        self.voranalyse_table.setAlternatingRowColors(True)
+        apply_table_style(self.voranalyse_table)
+        stats_layout.addWidget(self.voranalyse_table)
+
+        # Analyse-Umfang Label
+        self.analyse_info_label = QLabel("Keine Analyse durchgeführt")
+        self.analyse_info_label.setStyleSheet("color: #666; font-style: italic;")
+        stats_layout.addWidget(self.analyse_info_label)
+
+        stats_group.setLayout(stats_layout)
+        voranalyse_layout.addWidget(stats_group)
+
+        voranalyse_layout.addStretch()
+        voranalyse_widget.setLayout(voranalyse_layout)
+
+        # ============================================
+        # RECHTE SEITE: Szenarien (ca. 2/3)
+        # ============================================
+        szenarien_widget = QWidget()
+        szenarien_layout = QVBoxLayout()
 
         # Szenario-Generator
-        gen_group = QGroupBox("Szenario-Generator")
+        gen_group = QGroupBox("Szenario-Generator (Manuell)")
         apply_groupbox_style(gen_group)
         gen_layout = QGridLayout()
-        
-        # Grid-Parameter Ranges - AKTUALISIERT mit feinerer Granularität
+
+        # Grid-Parameter Ranges
         gen_layout.addWidget(QLabel("Aktien/Level:"), 0, 0)
         self.shares_from_spin = QSpinBox()
         self.shares_from_spin.setRange(50, 500)
@@ -902,12 +998,12 @@ class AdvancedBacktestWidget(QWidget):
         self.levels_to_spin.setRange(2, 15)
         self.levels_to_spin.setValue(10)
         gen_layout.addWidget(self.levels_to_spin, 3, 3)
-        
+
         # Optionen
         self.long_check = QCheckBox("LONG Szenarien")
         self.long_check.setChecked(True)
         gen_layout.addWidget(self.long_check, 4, 0, 1, 2)
-        
+
         self.short_check = QCheckBox("SHORT Szenarien")
         self.short_check.setChecked(True)
         gen_layout.addWidget(self.short_check, 4, 2, 1, 2)
@@ -923,35 +1019,58 @@ class AdvancedBacktestWidget(QWidget):
         self.add_scenarios_btn.clicked.connect(self.add_scenarios)
         buttons_layout.addWidget(self.add_scenarios_btn)
 
-        self.clear_scenarios_btn = QPushButton("🗑️ Alle löschen")
-        self.clear_scenarios_btn.clicked.connect(self.clear_scenarios)
-        buttons_layout.addWidget(self.clear_scenarios_btn)
-
         gen_layout.addLayout(buttons_layout, 5, 0, 1, 4)
-        
+
         gen_group.setLayout(gen_layout)
-        layout.addWidget(gen_group)
-        
-        # Szenarien-Liste
+        szenarien_layout.addWidget(gen_group)
+
+        # Szenarien-Liste mit Ursprung-Spalte
         list_group = QGroupBox("Generierte Szenarien")
         apply_groupbox_style(list_group)
         list_layout = QVBoxLayout()
 
         self.scenarios_table = QTableWidget()
-        self.scenarios_table.setColumnCount(6)
+        self.scenarios_table.setColumnCount(7)  # +1 für Ursprung
         self.scenarios_table.setHorizontalHeaderLabels([
-            "Name", "Typ", "Aktien/Level", "Step %", "Exit %", "Max Levels"
+            "Name", "Typ", "Aktien/Level", "Step %", "Exit %", "Max Levels", "Ursprung"
         ])
+        # Multi-Selection aktivieren
+        self.scenarios_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.scenarios_table.setSelectionMode(QTableWidget.SelectionMode.MultiSelection)
         apply_table_style(self.scenarios_table)
         list_layout.addWidget(self.scenarios_table)
-        
+
+        # Footer mit Count und Delete-Button
+        footer_layout = QHBoxLayout()
         self.scenario_count_label = QLabel("0 Szenarien")
-        list_layout.addWidget(self.scenario_count_label)
-        
+        footer_layout.addWidget(self.scenario_count_label)
+
+        footer_layout.addStretch()
+
+        self.delete_selected_btn = QPushButton("🗑️ Ausgewählte löschen")
+        self.delete_selected_btn.clicked.connect(self.delete_selected_scenarios)
+        footer_layout.addWidget(self.delete_selected_btn)
+
+        self.clear_scenarios_btn = QPushButton("🗑️ Alle löschen")
+        self.clear_scenarios_btn.clicked.connect(self.clear_scenarios)
+        footer_layout.addWidget(self.clear_scenarios_btn)
+
+        list_layout.addLayout(footer_layout)
+
         list_group.setLayout(list_layout)
-        layout.addWidget(list_group)
-        
-        widget.setLayout(layout)
+        szenarien_layout.addWidget(list_group)
+
+        szenarien_widget.setLayout(szenarien_layout)
+
+        # Widgets zum Splitter hinzufügen
+        splitter.addWidget(voranalyse_widget)
+        splitter.addWidget(szenarien_widget)
+
+        # Splitter-Verhältnis: 1/3 links, 2/3 rechts
+        splitter.setSizes([300, 600])
+
+        main_layout.addWidget(splitter)
+        widget.setLayout(main_layout)
         return widget
         
     def create_results_tab(self):
@@ -1206,7 +1325,7 @@ class AdvancedBacktestWidget(QWidget):
         )
 
     def generate_scenarios(self):
-        """Generiere Backtest-Szenarien mit flexibleren Ranges"""
+        """Generiere Backtest-Szenarien mit flexibleren Ranges (User-Ursprung)"""
 
         # Hole Symbol für Szenario-Namen
         symbol = self.symbol_edit.text() or "XXX"
@@ -1214,6 +1333,8 @@ class AdvancedBacktestWidget(QWidget):
         # NEU: Wenn kein Reset gewünscht, behalte existierende Szenarien
         if not hasattr(self, 'scenarios'):
             self.scenarios = {}
+        if not hasattr(self, 'scenario_origins'):
+            self.scenario_origins = {}
 
         new_scenarios = {}
 
@@ -1260,6 +1381,7 @@ class AdvancedBacktestWidget(QWidget):
                                 'exit': exit_pct,
                                 'levels': levels
                             }
+                            self.scenario_origins[name] = "User"  # NEU: Ursprung setzen
                             counter += 1
 
         # SHORT Szenarien
@@ -1277,6 +1399,7 @@ class AdvancedBacktestWidget(QWidget):
                                 'exit': exit_pct,
                                 'levels': levels
                             }
+                            self.scenario_origins[name] = "User"  # NEU: Ursprung setzen
                             counter += 1
 
         # Füge neue Szenarien zu bestehenden hinzu
@@ -1295,15 +1418,319 @@ class AdvancedBacktestWidget(QWidget):
     def clear_scenarios(self):
         """Lösche alle Szenarien"""
         self.scenarios = {}
+        self.scenario_origins = {}  # NEU: Auch Origins löschen
         self.update_scenarios_table()
         self.scenario_count_label.setText("0 Szenarien")
         self.update_status("🗑️ Alle Szenarien gelöscht")
         self.log("Alle Szenarien gelöscht")
-        
+
+    def delete_selected_scenarios(self):
+        """Lösche ausgewählte Szenarien aus der Tabelle"""
+        # Sammle ausgewählte Zeilen
+        selected_rows = set()
+        for item in self.scenarios_table.selectedItems():
+            selected_rows.add(item.row())
+
+        if not selected_rows:
+            QMessageBox.warning(
+                self,
+                "Keine Auswahl",
+                "Bitte wähle mindestens ein Szenario zum Löschen aus.\n\n"
+                "Tipp: Mit Ctrl+Klick kannst du mehrere Szenarien auswählen."
+            )
+            return
+
+        # Bestätigung
+        reply = QMessageBox.question(
+            self,
+            "Szenarien löschen",
+            f"Möchtest du wirklich {len(selected_rows)} Szenario(s) löschen?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+
+        if reply != QMessageBox.Yes:
+            return
+
+        # Sammle Namen der zu löschenden Szenarien
+        names_to_delete = []
+        for row in selected_rows:
+            name_item = self.scenarios_table.item(row, 0)
+            if name_item:
+                names_to_delete.append(name_item.text())
+
+        # Lösche Szenarien
+        deleted_count = 0
+        for name in names_to_delete:
+            if name in self.scenarios:
+                del self.scenarios[name]
+                deleted_count += 1
+            if name in self.scenario_origins:
+                del self.scenario_origins[name]
+
+        # Update UI
+        self.update_scenarios_table()
+        self.scenario_count_label.setText(f"{len(self.scenarios)} Szenarien")
+        self.update_status(f"🗑️ {deleted_count} Szenario(s) gelöscht")
+        self.log(f"Gelöscht: {deleted_count} Szenarien")
+
+    def run_voranalyse(self):
+        """Führe Voranalyse der historischen Daten durch und generiere KI-Szenarien"""
+        # Prüfe ob Daten vorhanden
+        if self.historical_data is None:
+            QMessageBox.warning(
+                self,
+                "Keine Daten",
+                "Bitte lade zuerst historische Daten im Setup-Tab!"
+            )
+            return
+
+        df = self.historical_data
+        if isinstance(df, dict):
+            df = pd.DataFrame(df)
+
+        if df.empty:
+            QMessageBox.warning(self, "Keine Daten", "DataFrame ist leer!")
+            return
+
+        self.update_status("🔬 Führe Voranalyse durch...")
+
+        # ============================================
+        # KERZEN-STATISTIKEN BERECHNEN
+        # ============================================
+        try:
+            # Berechne Kerzen-Range (High - Low) in Prozent
+            df['candle_range_pct'] = ((df['high'] - df['low']) / df['low']) * 100
+
+            # Berechne Tages-Ranges
+            if isinstance(df.index, pd.DatetimeIndex):
+                daily_groups = df.groupby(df.index.date)
+                daily_highs = daily_groups['high'].max()
+                daily_lows = daily_groups['low'].min()
+                daily_ranges_pct = ((daily_highs - daily_lows) / daily_lows) * 100
+            else:
+                daily_ranges_pct = df['candle_range_pct']
+
+            # Berechne typischen Rebound (Close vs Low für bullish candles)
+            bullish_mask = df['close'] > df['open']
+            if bullish_mask.any():
+                bullish_rebounds = ((df.loc[bullish_mask, 'close'] - df.loc[bullish_mask, 'low']) /
+                                   df.loc[bullish_mask, 'low']) * 100
+                typical_rebound = bullish_rebounds.mean()
+            else:
+                typical_rebound = df['candle_range_pct'].mean() * 0.5
+
+            # Statistiken sammeln
+            stats = {
+                'symbol': self.symbol_edit.text(),
+                'analysezeitraum': f"{self.timeframe_spin.value()} Tage",
+                'von_datum': df.index.min().strftime('%d.%m.%Y') if isinstance(df.index, pd.DatetimeIndex) else 'N/A',
+                'bis_datum': df.index.max().strftime('%d.%m.%Y') if isinstance(df.index, pd.DatetimeIndex) else 'N/A',
+                'timeframe': f"{self.candle_spin.value()} Minuten",
+                'tages_range_avg': daily_ranges_pct.mean(),
+                'kerzen_range_avg': df['candle_range_pct'].mean(),
+                'percentile_25': df['candle_range_pct'].quantile(0.25),
+                'percentile_50': df['candle_range_pct'].quantile(0.50),
+                'percentile_75': df['candle_range_pct'].quantile(0.75),
+                'percentile_90': df['candle_range_pct'].quantile(0.90),
+                'typical_rebound': typical_rebound,
+                'bullish_pct': (bullish_mask.sum() / len(df)) * 100,
+                'extreme_days': (daily_ranges_pct > daily_ranges_pct.quantile(0.90)).sum() if len(daily_ranges_pct) > 0 else 0,
+                'avg_price': df['close'].mean()
+            }
+
+            self.voranalyse_stats = stats
+
+            # ============================================
+            # STATISTIK-TABELLE AKTUALISIEREN
+            # ============================================
+            rows = [
+                ("ANALYSE-UMFANG", ""),
+                ("Symbol", stats['symbol']),
+                ("Analysezeitraum", stats['analysezeitraum']),
+                ("von Datum", stats['von_datum']),
+                ("bis Datum", stats['bis_datum']),
+                ("Timeframe", stats['timeframe']),
+                ("", ""),
+                ("KERZEN-STATISTIKEN", ""),
+                ("Ø Tages-Range", f"{stats['tages_range_avg']:.2f}%"),
+                ("Ø Kerzen-Range", f"{stats['kerzen_range_avg']:.2f}%"),
+                ("25% Perzentil", f"{stats['percentile_25']:.2f}%"),
+                ("50% Perzentil", f"{stats['percentile_50']:.2f}%"),
+                ("75% Perzentil", f"{stats['percentile_75']:.2f}%"),
+                ("90% Perzentil", f"{stats['percentile_90']:.2f}%"),
+                ("Typischer Rebound", f"{stats['typical_rebound']:.2f}%"),
+                ("Bullish Kerzen", f"{stats['bullish_pct']:.1f}%"),
+                ("Extreme Tage", f"{stats['extreme_days']}")
+            ]
+
+            self.voranalyse_table.setRowCount(len(rows))
+            for row_idx, (metric, value) in enumerate(rows):
+                metric_item = QTableWidgetItem(metric)
+                value_item = QTableWidgetItem(str(value))
+
+                # Header-Zeilen fett und farbig
+                if metric in ["ANALYSE-UMFANG", "KERZEN-STATISTIKEN"]:
+                    font = metric_item.font()
+                    font.setBold(True)
+                    metric_item.setFont(font)
+                    metric_item.setBackground(QColor(220, 220, 220))
+                    value_item.setBackground(QColor(220, 220, 220))
+
+                self.voranalyse_table.setItem(row_idx, 0, metric_item)
+                self.voranalyse_table.setItem(row_idx, 1, value_item)
+
+            self.analyse_info_label.setText(f"✅ Analyse abgeschlossen - {len(df)} Kerzen analysiert")
+
+            # ============================================
+            # KI-SZENARIEN GENERIEREN
+            # ============================================
+            self._generate_ki_scenarios(stats)
+
+        except Exception as e:
+            import traceback
+            error_msg = f"Fehler bei Voranalyse: {str(e)}"
+            self.update_status(f"❌ {error_msg}")
+            self.log(f"ERROR: {error_msg}\n{traceback.format_exc()}")
+            QMessageBox.critical(self, "Fehler", error_msg)
+
+    def _generate_ki_scenarios(self, stats):
+        """Generiere KI-basierte Szenarien basierend auf Voranalyse-Statistiken"""
+
+        # Hole Parameter aus UI
+        min_profit_cents = self.min_profit_cents_spin.value() / 100  # In Dollar
+        shares = self.ki_shares_spin.value()
+        min_levels = self.ki_min_levels_spin.value()
+        max_levels = self.ki_max_levels_spin.value()
+        max_scenarios = self.ki_max_scenarios_spin.value()
+        symbol = self.symbol_edit.text() or "XXX"
+        avg_price = stats.get('avg_price', 100)
+
+        # Berechne minimales Exit% basierend auf min_profit_cents
+        # min_profit = shares * avg_price * exit_pct/100
+        # => exit_pct = min_profit * 100 / (shares * avg_price)
+        min_exit_pct = (min_profit_cents * 100) / avg_price
+        min_exit_pct = max(0.1, round(min_exit_pct, 2))  # Mindestens 0.1%
+
+        self.log(f"KI-Szenario-Generierung: Min Exit% = {min_exit_pct:.2f}% (basierend auf ${min_profit_cents:.2f} Gewinn bei Ø Preis ${avg_price:.2f})")
+
+        # ============================================
+        # STRATEGIE: Maximale Trade-Frequenz
+        # ============================================
+        # Da Restaktien OK sind, optimieren wir auf häufige Fills und schnelle Exits
+
+        kerzen_range = stats['kerzen_range_avg']
+        typical_rebound = stats['typical_rebound']
+        tages_range = stats['tages_range_avg']
+
+        # Berechne optimale Step-Werte (aggressiv für viele Fills)
+        # Aggressive: 50% der Kerzen-Range (häufige Fills)
+        # Moderat: 75% der Kerzen-Range
+        # Konservativ: 100% der Kerzen-Range (weniger Fills aber sicherer)
+        step_aggressive = max(0.1, round(kerzen_range * 0.5, 1))
+        step_moderate = max(0.1, round(kerzen_range * 0.75, 1))
+        step_conservative = max(0.2, round(kerzen_range, 1))
+
+        # Berechne optimale Exit-Werte (basierend auf Rebound)
+        # Schnelle Exits für hohes Cycling
+        exit_aggressive = max(min_exit_pct, round(typical_rebound * 0.5, 1))
+        exit_moderate = max(min_exit_pct, round(typical_rebound * 0.75, 1))
+        exit_conservative = max(min_exit_pct, round(typical_rebound, 1))
+
+        # Berechne Level-Vorschläge basierend auf Tages-Range
+        # Mehr Levels = mehr Kapazität (Restaktien sind OK)
+        levels_by_range = int(tages_range / step_moderate) if step_moderate > 0 else 5
+        levels_by_range = max(min_levels, min(max_levels, levels_by_range))
+
+        # ============================================
+        # SZENARIO-SETS ERSTELLEN
+        # ============================================
+        ki_scenarios = []
+
+        # Set 1: Aggressiv (maximale Trade-Frequenz)
+        ki_scenarios.append({
+            'name': f"KI_aggressiv_L",
+            'type': 'LONG',
+            'shares': shares,
+            'step': step_aggressive,
+            'exit': exit_aggressive,
+            'levels': max_levels
+        })
+        ki_scenarios.append({
+            'name': f"KI_aggressiv_S",
+            'type': 'SHORT',
+            'shares': shares,
+            'step': step_aggressive,
+            'exit': exit_aggressive,
+            'levels': max_levels
+        })
+
+        # Set 2: Moderat (ausgewogen)
+        ki_scenarios.append({
+            'name': f"KI_moderat_L",
+            'type': 'LONG',
+            'shares': shares,
+            'step': step_moderate,
+            'exit': exit_moderate,
+            'levels': levels_by_range
+        })
+        ki_scenarios.append({
+            'name': f"KI_moderat_S",
+            'type': 'SHORT',
+            'shares': shares,
+            'step': step_moderate,
+            'exit': exit_moderate,
+            'levels': levels_by_range
+        })
+
+        # Set 3: Konservativ (sicherer)
+        ki_scenarios.append({
+            'name': f"KI_konservativ_L",
+            'type': 'LONG',
+            'shares': shares,
+            'step': step_conservative,
+            'exit': exit_conservative,
+            'levels': min_levels
+        })
+        ki_scenarios.append({
+            'name': f"KI_konservativ_S",
+            'type': 'SHORT',
+            'shares': shares,
+            'step': step_conservative,
+            'exit': exit_conservative,
+            'levels': min_levels
+        })
+
+        # Limitiere auf max_scenarios
+        ki_scenarios = ki_scenarios[:max_scenarios]
+
+        # ============================================
+        # SZENARIEN ZUR LISTE HINZUFÜGEN
+        # ============================================
+        added_count = 0
+        for scenario in ki_scenarios:
+            name = f"{scenario['name']}_{symbol}"
+            self.scenarios[name] = {
+                'type': scenario['type'],
+                'shares': scenario['shares'],
+                'step': scenario['step'],
+                'exit': scenario['exit'],
+                'levels': scenario['levels']
+            }
+            self.scenario_origins[name] = "KI"  # Ursprung als KI markieren
+            added_count += 1
+
+        # Update UI
+        self.update_scenarios_table()
+        self.scenario_count_label.setText(f"{len(self.scenarios)} Szenarien")
+        self.update_status(f"✅ Voranalyse abgeschlossen - {added_count} KI-Szenarien generiert")
+        self.log(f"KI generierte {added_count} optimierte Szenarien basierend auf Statistiken:")
+        self.log(f"   Step-Range: {step_aggressive}-{step_conservative}%, Exit-Range: {exit_aggressive}-{exit_conservative}%")
+
     def update_scenarios_table(self):
-        """Aktualisiere Szenarien-Tabelle"""
+        """Aktualisiere Szenarien-Tabelle mit Ursprung-Spalte"""
         self.scenarios_table.setRowCount(len(self.scenarios))
-        
+
         for row, (name, config) in enumerate(self.scenarios.items()):
             self.scenarios_table.setItem(row, 0, QTableWidgetItem(name))
             self.scenarios_table.setItem(row, 1, QTableWidgetItem(config['type']))
@@ -1311,6 +1738,15 @@ class AdvancedBacktestWidget(QWidget):
             self.scenarios_table.setItem(row, 3, QTableWidgetItem(f"{config['step']}%"))
             self.scenarios_table.setItem(row, 4, QTableWidgetItem(f"{config['exit']}%"))
             self.scenarios_table.setItem(row, 5, QTableWidgetItem(str(config['levels'])))
+
+            # Ursprung-Spalte mit Farbkodierung
+            origin = self.scenario_origins.get(name, "User")
+            origin_item = QTableWidgetItem(origin)
+            if origin == "KI":
+                origin_item.setBackground(QColor(200, 230, 255))  # Hellblau für KI
+            else:
+                origin_item.setBackground(QColor(255, 255, 200))  # Hellgelb für User
+            self.scenarios_table.setItem(row, 6, origin_item)
             
     def run_backtest(self):
         """Starte Backtest für alle Szenarien"""

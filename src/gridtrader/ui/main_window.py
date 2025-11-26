@@ -39,7 +39,6 @@ class MainWindow(QMainWindow):
         
         # Create all tabs
         self._create_dashboard()
-        self._create_analyse()
         self._create_backtest()
         self._create_trading_bot()
         self._create_live()
@@ -373,42 +372,10 @@ class MainWindow(QMainWindow):
             comm_item.setBackground(row_bg_color)
             self.dashboard_trades_table.setItem(row, 8, comm_item)
         
-    def _create_analyse(self):
-        analyse = QWidget()
-        layout = QVBoxLayout(analyse)
-        
-        # Input
-        input_layout = QHBoxLayout()
-        input_layout.addWidget(QLabel("Symbol:"))
-        input_layout.addWidget(QLineEdit("AAPL"))
-        input_layout.addWidget(QLabel("Side:"))
-        
-        side_combo = QComboBox()
-        side_combo.addItems(["LONG", "SHORT"])
-        input_layout.addWidget(side_combo)
-        
-        input_layout.addWidget(QLabel("Levels:"))
-        levels = QSpinBox()
-        levels.setRange(2, 100)
-        levels.setValue(5)
-        input_layout.addWidget(levels)
-        
-        input_layout.addWidget(QPushButton("🔍 Analyse"))
-        input_layout.addStretch()
-        
-        layout.addLayout(input_layout)
-        
-        # Results
-        results = QTextEdit()
-        results.setPlaceholderText("Analysis results will appear here...")
-        layout.addWidget(results)
-        
-        self.tabs.addTab(analyse, "Analyse")
-        
     def _create_backtest(self):
         # Use Backtest Widget
         self.backtest_widget = AdvancedBacktestWidget()
-        self.tabs.addTab(self.backtest_widget, "Backtest")
+        self.tabs.addTab(self.backtest_widget, "Analyse & Backtests")
 
     def _create_trading_bot(self):
         # Use Trading Bot Widget
