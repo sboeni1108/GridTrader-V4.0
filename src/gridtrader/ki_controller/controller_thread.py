@@ -414,8 +414,13 @@ class KIControllerThread(QThread):
         try:
             # Durch alle Kerzen iterieren und den Analyzern zuführen
             for timestamp, row in data.iterrows():
+                # Timestamp extrahieren und timezone-naive machen
+                ts = timestamp.to_pydatetime() if hasattr(timestamp, 'to_pydatetime') else timestamp
+                if hasattr(ts, 'tzinfo') and ts.tzinfo is not None:
+                    ts = ts.replace(tzinfo=None)
+
                 candle = Candle(
-                    timestamp=timestamp.to_pydatetime() if hasattr(timestamp, 'to_pydatetime') else timestamp,
+                    timestamp=ts,
                     open=float(row['open']),
                     high=float(row['high']),
                     low=float(row['low']),
