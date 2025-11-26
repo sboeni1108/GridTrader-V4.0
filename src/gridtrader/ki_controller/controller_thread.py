@@ -20,6 +20,14 @@ from .state import (
     ActiveLevelInfo, DecisionRecord, PendingAlert, PerformanceStats
 )
 
+# Analyse-Module
+from .analysis import (
+    VolatilityMonitor, VolatilitySnapshot, Candle,
+    VolumeAnalyzer, VolumeSnapshot, VolumeCondition,
+    TimeProfile, TimeProfileSnapshot, TradingPhase,
+    PatternMatcher, PatternMatchResult, SituationFingerprint, MovementPattern,
+)
+
 # Timezone support
 try:
     from zoneinfo import ZoneInfo
@@ -97,13 +105,36 @@ class KIControllerThread(QThread):
         # Callbacks für Trading-Bot API
         self._trading_bot_api: Optional['ControllerAPI'] = None
 
-        # Analyse-Cache
+        # Analyse-Cache (Legacy - wird durch neue Module ersetzt)
         self._candle_cache: Dict[str, List[dict]] = {}  # Symbol -> Liste von Kerzen
         self._price_history: Dict[str, List[tuple]] = {}  # Symbol -> [(timestamp, price), ...]
 
         # Decision-Tracking
         self._last_decision_time: Dict[str, datetime] = {}
         self._pending_confirmations: Dict[str, PendingAlert] = {}
+
+        # ==================== ANALYSE-MODULE ====================
+        # Volatilitäts-Monitor für ATR und Regime Detection
+        self._volatility_monitor = VolatilityMonitor(
+            atr_period_short=self.config.analysis.atr_period_short,
+            atr_period_medium=self.config.analysis.atr_period_medium,
+            atr_period_long=self.config.analysis.atr_period_long,
+        )
+
+        # Volumen-Analyzer für Spike und Anomalie Detection
+        self._volume_analyzer = VolumeAnalyzer(
+            ma_period_short=self.config.analysis.volume_ma_period,
+            spike_threshold=self.config.analysis.volume_spike_threshold,
+        )
+
+        # Zeit-Profil für Tageszeit-basierte Anpassungen
+        self._time_profile = TimeProfile()
+
+        # Pattern Matcher für historische Muster-Erkennung
+        self._pattern_matcher = PatternMatcher(
+            similarity_threshold=self.config.analysis.pattern_similarity_threshold,
+            lookback_days=self.config.analysis.pattern_lookback_days,
+        )
 
     # ==================== THREAD LIFECYCLE ====================
 
@@ -307,77 +338,213 @@ class KIControllerThread(QThread):
 
     def _analyze_symbol(self, symbol: str):
         """
-        Führt Analyse für ein Symbol durch
+        Führt vollständige Analyse für ein Symbol durch.
 
-        - ATR berechnen
-        - Volatilitäts-Regime bestimmen
-        - Preis-Änderungen tracken
+        Verwendet die neuen Analyse-Module:
+        - VolatilityMonitor für ATR und Regime
+        - VolumeAnalyzer für Volumen-Anomalien
+        - TimeProfile für Tageszeit-Anpassung
+        - PatternMatcher für historische Muster
         """
         if symbol not in self.state.market_states:
             return
 
         ms = self.state.market_states[symbol]
-
-        # Preis-Historie für Analyse
-        history = self._price_history.get(symbol, [])
-        if len(history) < 5:
-            return  # Zu wenig Daten
-
-        # Preis-Änderungen berechnen
         now = datetime.now()
-        self._calculate_price_changes(ms, history, now)
 
-        # Volatilität (vereinfacht - wird in Phase 2 ausgebaut)
-        self._calculate_volatility(ms, history)
+        # 1. Volatilitäts-Analyse
+        vol_snapshot = self._volatility_monitor.get_snapshot(symbol)
+        if vol_snapshot:
+            # MarketState mit Volatilitätsdaten aktualisieren
+            ms.atr_5 = vol_snapshot.atr_5
+            ms.atr_14 = vol_snapshot.atr_14
+            ms.atr_50 = vol_snapshot.atr_50
+            ms.price_change_1min = vol_snapshot.price_change_1min
+            ms.price_change_5min = vol_snapshot.price_change_5min
+            ms.price_change_15min = vol_snapshot.price_change_15min
+            ms.candle_range_pct = vol_snapshot.avg_candle_range_pct
 
-        # Volatilitäts-Regime bestimmen
-        old_regime = ms.volatility_regime
-        ms.volatility_regime = self._determine_volatility_regime(ms)
+            # Regime-Änderung prüfen
+            old_regime = ms.volatility_regime
+            ms.volatility_regime = vol_snapshot.regime
 
-        if old_regime != ms.volatility_regime:
-            self.volatility_regime_changed.emit(symbol, ms.volatility_regime.value)
-            self._log(f"{symbol}: Volatilitäts-Regime → {ms.volatility_regime.value}", "INFO")
+            if old_regime != ms.volatility_regime:
+                self.volatility_regime_changed.emit(symbol, ms.volatility_regime.value)
+                self._log(f"{symbol}: Volatilitäts-Regime → {ms.volatility_regime.value}", "INFO")
 
-        # Analyse-Update senden
+        # 2. Volumen-Analyse
+        vol_analysis = self._volume_analyzer.get_snapshot(symbol)
+        if vol_analysis:
+            ms.volume_1min = vol_analysis.current_volume
+
+            # Volumen-Spike Warnung
+            if vol_analysis.is_spike:
+                self._log(
+                    f"{symbol}: Volumen-Spike ({vol_analysis.spike_magnitude:.1f}x normal)",
+                    "WARNING"
+                )
+
+            # Prüfe ob Trading pausiert werden sollte
+            should_pause, reason = self._volume_analyzer.should_pause_trading(symbol)
+            if should_pause:
+                self._log(f"{symbol}: {reason}", "WARNING")
+
+        # 3. Tageszeit-Profil
+        time_snapshot = self._time_profile.get_current_snapshot()
+
+        # 4. Pattern Matching (wenn genug Daten vorhanden)
+        pattern_result = self._try_pattern_match(symbol, ms, vol_snapshot, vol_analysis, time_snapshot)
+
+        # 5. Analyse-Update an UI senden
         self.market_analysis_update.emit({
             'symbol': symbol,
             'price': float(ms.current_price),
             'volatility_regime': ms.volatility_regime.value,
             'atr_5': ms.atr_5,
+            'atr_14': ms.atr_14 if hasattr(ms, 'atr_14') else 0,
             'price_change_5min': ms.price_change_5min,
+            'trading_phase': time_snapshot.phase.value,
+            'volume_ratio': vol_analysis.volume_ratio if vol_analysis else 1.0,
+            'pattern': pattern_result.dominant_pattern.value if pattern_result else 'UNKNOWN',
+            'pattern_confidence': pattern_result.confidence if pattern_result else 0,
         })
 
-    def _calculate_price_changes(self, ms: MarketState, history: List[tuple], now: datetime):
-        """Berechnet Preis-Änderungen über verschiedene Zeiträume"""
-        current = float(ms.current_price) if ms.current_price > 0 else 0
+        # 6. Situation für Pattern-Learning aufzeichnen
+        self._record_situation_for_learning(symbol, ms, vol_snapshot, vol_analysis, time_snapshot)
 
-        for minutes, attr_name in [(1, 'price_change_1min'), (5, 'price_change_5min'), (15, 'price_change_15min')]:
-            cutoff = now - timedelta(minutes=minutes)
-            past_prices = [p for t, p in history if t >= cutoff]
+    def _try_pattern_match(
+        self,
+        symbol: str,
+        ms: MarketState,
+        vol_snapshot: Optional[VolatilitySnapshot],
+        vol_analysis: Optional[VolumeSnapshot],
+        time_snapshot: TimeProfileSnapshot
+    ) -> Optional[PatternMatchResult]:
+        """Versucht Pattern-Matching und gibt Ergebnis zurück."""
+        if not vol_snapshot or float(ms.current_price) <= 0:
+            return None
 
-            if past_prices and past_prices[0] > 0:
-                change = (current - past_prices[0]) / past_prices[0] * 100
-                setattr(ms, attr_name, change)
+        try:
+            # Situations-Fingerprint erstellen
+            fingerprint = self._create_fingerprint(symbol, ms, vol_snapshot, vol_analysis, time_snapshot)
 
-    def _calculate_volatility(self, ms: MarketState, history: List[tuple]):
-        """
-        Berechnet Volatilität (vereinfachte Version)
+            # Ähnliche Situationen finden
+            result = self._pattern_matcher.find_similar_situations(fingerprint)
 
-        In Phase 2 wird dies durch echte ATR-Berechnung mit Kerzen ersetzt.
-        """
-        if len(history) < 10:
+            if result.match_count > 0 and result.confidence > 0.5:
+                # Guter Match gefunden
+                self.pattern_detected.emit({
+                    'symbol': symbol,
+                    'pattern': result.dominant_pattern.value,
+                    'confidence': result.confidence,
+                    'expected_5min': result.expected_5min_change,
+                    'expected_15min': result.expected_15min_change,
+                    'match_count': result.match_count,
+                })
+
+                if self.config.log_analysis_details:
+                    self._log(
+                        f"{symbol}: Pattern {result.dominant_pattern.value} "
+                        f"(Confidence: {result.confidence:.0%}, {result.match_count} Matches)",
+                        "INFO"
+                    )
+
+            return result
+
+        except Exception as e:
+            if self.config.log_analysis_details:
+                self._log(f"Pattern Match Fehler für {symbol}: {e}", "WARNING")
+            return None
+
+    def _create_fingerprint(
+        self,
+        symbol: str,
+        ms: MarketState,
+        vol_snapshot: Optional[VolatilitySnapshot],
+        vol_analysis: Optional[VolumeSnapshot],
+        time_snapshot: TimeProfileSnapshot
+    ) -> SituationFingerprint:
+        """Erstellt einen Situations-Fingerprint für Pattern-Matching."""
+        return SituationFingerprint(
+            timestamp=datetime.now(),
+            symbol=symbol,
+            price_position_in_range=50.0,  # TODO: Berechnen aus Tages-High/Low
+            atr_pct=vol_snapshot.atr_14 if vol_snapshot else 0,
+            volatility_regime=ms.volatility_regime.value,
+            volume_ratio=vol_analysis.volume_ratio if vol_analysis else 1.0,
+            volume_condition=vol_analysis.condition.value if vol_analysis else "NORMAL",
+            short_term_trend=vol_snapshot.price_change_5min if vol_snapshot else 0,
+            medium_term_trend=vol_snapshot.price_change_15min if vol_snapshot else 0,
+            trading_phase=time_snapshot.phase.value,
+            minutes_since_open=time_snapshot.minutes_since_open,
+            last_candle_body_pct=0,  # TODO: Aus Kerzen-Daten
+            last_candle_range_pct=vol_snapshot.avg_candle_range_pct if vol_snapshot else 0,
+        )
+
+    def _record_situation_for_learning(
+        self,
+        symbol: str,
+        ms: MarketState,
+        vol_snapshot: Optional[VolatilitySnapshot],
+        vol_analysis: Optional[VolumeSnapshot],
+        time_snapshot: TimeProfileSnapshot
+    ):
+        """Zeichnet aktuelle Situation für späteres Lernen auf."""
+        if not vol_snapshot:
             return
 
-        # Letzte N Preise
-        recent_prices = [p for _, p in history[-50:]]
+        # Nur alle 60 Sekunden aufzeichnen (nicht bei jedem Tick)
+        last_record_key = f"_last_record_{symbol}"
+        now = datetime.now()
 
-        if len(recent_prices) >= 5:
-            # Einfache Volatilität: Standardabweichung / Mittelwert
-            import statistics
-            mean = statistics.mean(recent_prices)
-            if mean > 0:
-                std = statistics.stdev(recent_prices) if len(recent_prices) > 1 else 0
-                ms.atr_5 = (std / mean) * 100  # Als Prozent
+        if hasattr(self, last_record_key):
+            last_time = getattr(self, last_record_key)
+            if (now - last_time).total_seconds() < 60:
+                return
+
+        setattr(self, last_record_key, now)
+
+        # Fingerprint erstellen und speichern
+        fingerprint = self._create_fingerprint(symbol, ms, vol_snapshot, vol_analysis, time_snapshot)
+        self._pattern_matcher.record_situation(fingerprint)
+
+        # Auch dem Time Profile melden (für Symbol-spezifisches Lernen)
+        self._time_profile.record_observation(
+            symbol=symbol,
+            atr=vol_snapshot.atr_14,
+            candle_range=vol_snapshot.avg_candle_range_pct,
+        )
+
+    def add_candle(self, symbol: str, candle_data: dict):
+        """
+        Fügt eine neue Kerze für die Analyse hinzu.
+
+        Wird von außen aufgerufen (z.B. vom Trading-Bot bei neuen Kerzen).
+        """
+        try:
+            candle = Candle(
+                timestamp=candle_data.get('timestamp', datetime.now()),
+                open=candle_data['open'],
+                high=candle_data['high'],
+                low=candle_data['low'],
+                close=candle_data['close'],
+                volume=candle_data.get('volume', 0),
+            )
+
+            # Zur Volatilitäts-Analyse hinzufügen
+            self._volatility_monitor.add_candle(symbol, candle)
+
+            # Volumen-Analyse aktualisieren
+            price_change = candle.body_pct
+            self._volume_analyzer.add_volume(
+                symbol=symbol,
+                volume=candle.volume,
+                price_change_pct=price_change,
+                timestamp=candle.timestamp,
+            )
+
+        except Exception as e:
+            self._log(f"Fehler bei Kerzen-Verarbeitung für {symbol}: {e}", "ERROR")
 
     def _determine_volatility_regime(self, ms: MarketState) -> VolatilityRegime:
         """Bestimmt das Volatilitäts-Regime basierend auf Analyse"""
