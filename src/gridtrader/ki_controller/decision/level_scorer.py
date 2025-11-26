@@ -193,9 +193,11 @@ class LevelScorer:
         if use_cache and self._is_cache_valid(level_id):
             return self._score_cache[level_id]
 
-        # Basis-Informationen extrahieren
-        entry_price = float(level.get('entry_price', 0))
-        exit_price = float(level.get('exit_price', 0))
+        # Basis-Informationen extrahieren (None-safe)
+        raw_entry = level.get('entry_price')
+        raw_exit = level.get('exit_price')
+        entry_price = float(raw_entry) if raw_entry is not None else 0.0
+        exit_price = float(raw_exit) if raw_exit is not None else 0.0
         side = level.get('side', 'LONG')
         symbol = level.get('symbol', '')
 
