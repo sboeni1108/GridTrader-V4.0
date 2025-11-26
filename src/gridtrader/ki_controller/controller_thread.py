@@ -497,7 +497,9 @@ class KIControllerThread(QThread):
         2. Analyse durchführen
         3. Entscheidungen treffen
         4. Risiko prüfen
-        5. Aktionen ausführen
+        5. Pending Alerts prüfen
+        6. Waisen-Positionen überwachen
+        7. State speichern
         """
         try:
             # 1. Marktdaten aktualisieren
@@ -517,7 +519,10 @@ class KIControllerThread(QThread):
             # 5. Pending Alerts prüfen (Timeout)
             self._check_pending_alerts()
 
-            # 6. State periodisch speichern
+            # 6. Waisen-Positionen überwachen und bei Gewinn schließen
+            self._monitor_orphan_positions()
+
+            # 7. State periodisch speichern
             if datetime.now().second % 30 == 0:  # Alle 30 Sekunden
                 self.state.save()
 
@@ -1249,6 +1254,110 @@ class KIControllerThread(QThread):
 
             if not self._pending_confirmations and self.state.status == ControllerStatus.ALERT_PENDING:
                 self.state.status = ControllerStatus.RUNNING
+
+    # ==================== WAISEN-POSITIONEN (ORPHAN POSITIONS) ====================
+
+    def _monitor_orphan_positions(self):
+        """
+        Überwacht Waisen-Positionen und schließt sie bei ausreichendem Gewinn.
+
+        Waisen-Positionen entstehen wenn ein aktives Level deaktiviert wird,
+        aber die Position offen bleibt. Der KI-Controller überwacht diese
+        und schließt sie automatisch bei mindestens 3 Cent Gewinn pro Aktie.
+        """
+        if self._trading_bot_api is None:
+            return
+
+        try:
+            # Waisen-Positionen abrufen
+            orphans = self._trading_bot_api.get_orphan_positions()
+
+            if not orphans:
+                return  # Keine Waisen-Positionen
+
+            # Aktuelle Marktpreise für Waisen-Symbole sammeln
+            market_prices = {}
+            for orphan in orphans:
+                symbol = orphan.get('symbol', '')
+                if symbol and symbol not in market_prices:
+                    market_data = self._trading_bot_api.get_market_data(symbol)
+                    if market_data and 'price' in market_data:
+                        market_prices[symbol] = market_data['price']
+
+            # Preise in Waisen-Positionen aktualisieren
+            self._trading_bot_api.update_orphan_prices(market_prices)
+
+            # Prüfen welche Waisen geschlossen werden sollten
+            for orphan in orphans:
+                if self._trading_bot_api.should_close_orphan(orphan):
+                    orphan_id = orphan.get('id', '')
+                    symbol = orphan.get('symbol', '')
+                    profit_per_share = orphan.get('profit_per_share', 0)
+                    shares = orphan.get('shares', 0)
+                    total_profit = profit_per_share * shares
+
+                    self._log(
+                        f"🎯 Waisen-Position {symbol}: Gewinn ${profit_per_share:.4f}/Aktie "
+                        f"(${total_profit:.2f} gesamt) >= 3¢ → Schließe Position",
+                        "INFO"
+                    )
+
+                    # Position schließen
+                    success = self._trading_bot_api.close_orphan_position(orphan_id)
+
+                    if success:
+                        self._log(f"✅ Waisen-Position {orphan_id} zum Schließen eingereicht", "SUCCESS")
+
+                        # Decision Record erstellen
+                        self._record_decision(
+                            decision_type="CLOSE_ORPHAN",
+                            symbol=symbol,
+                            reason=f"Gewinn pro Aktie (${profit_per_share:.4f}) >= 3¢",
+                            details={
+                                'orphan_id': orphan_id,
+                                'profit_per_share': profit_per_share,
+                                'total_profit': total_profit,
+                                'shares': shares,
+                            }
+                        )
+                    else:
+                        self._log(f"❌ Fehler beim Schließen von Waisen-Position {orphan_id}", "ERROR")
+
+        except Exception as e:
+            self._log(f"Fehler bei Waisen-Position-Überwachung: {e}", "ERROR")
+
+    def deactivate_level_to_orphan(self, level_id: str, reason: str = "KI-Entscheidung") -> bool:
+        """
+        Deaktiviert ein aktives Level und wandelt die Position in eine Waisen-Position um.
+
+        Dies ist die bevorzugte Methode für den KI-Controller, um Levels zu deaktivieren
+        während die Position für spätere Gewinnmitnahme offen bleibt.
+
+        Args:
+            level_id: ID des zu deaktivierenden Levels
+            reason: Grund für die Deaktivierung
+
+        Returns:
+            True wenn erfolgreich
+        """
+        if self._trading_bot_api is None:
+            self._log("Trading-Bot API nicht verfügbar", "ERROR")
+            return False
+
+        success = self._trading_bot_api.deactivate_level_keep_position(level_id, reason)
+
+        if success:
+            self._log(f"Level {level_id} deaktiviert → Waisen-Position erstellt", "INFO")
+
+            # Decision Record
+            self._record_decision(
+                decision_type="DEACTIVATE_TO_ORPHAN",
+                symbol="",  # Symbol ist im Level
+                reason=reason,
+                details={'level_id': level_id}
+            )
+
+        return success
 
     # ==================== RISK MANAGEMENT ====================
 

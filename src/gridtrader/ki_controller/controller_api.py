@@ -229,6 +229,72 @@ class ControllerAPI(ABC):
         """
         pass
 
+    # ==================== WAISEN-POSITIONEN (ORPHAN POSITIONS) ====================
+
+    @abstractmethod
+    def get_orphan_positions(self) -> List[Dict[str, Any]]:
+        """
+        Holt alle offenen Waisen-Positionen.
+
+        Waisen-Positionen entstehen wenn ein aktives Level deaktiviert wird,
+        aber die Position offen bleibt (für spätere Gewinnmitnahme).
+
+        Returns:
+            Liste von Waisen-Positionen mit:
+                - id: Eindeutige ID
+                - symbol: Aktien-Symbol
+                - side: "LONG" oder "SHORT"
+                - shares: Anzahl Aktien
+                - entry_price: Einstiegspreis
+                - current_price: Aktueller Preis (wenn bekannt)
+                - unrealized_pnl: Unrealisierter P&L
+                - profit_per_share: Gewinn pro Aktie in $
+                - min_profit_cents: Mindestgewinn in Cent pro Aktie
+        """
+        pass
+
+    @abstractmethod
+    def close_orphan_position(self, orphan_id: str) -> bool:
+        """
+        Schließt eine Waisen-Position durch Market-Order.
+
+        Args:
+            orphan_id: ID der Waisen-Position
+
+        Returns:
+            True wenn Order platziert wurde
+        """
+        pass
+
+    @abstractmethod
+    def deactivate_level_keep_position(self, level_id: str, reason: str = "") -> bool:
+        """
+        Deaktiviert ein aktives Level, behält aber die Position als Waise.
+
+        Args:
+            level_id: ID des zu deaktivierenden Levels
+            reason: Grund für die Deaktivierung
+
+        Returns:
+            True wenn erfolgreich
+        """
+        pass
+
+    @abstractmethod
+    def should_close_orphan(self, orphan: Dict[str, Any]) -> bool:
+        """
+        Prüft ob eine Waisen-Position geschlossen werden sollte.
+
+        Kriterium: Gewinn pro Aktie >= min_profit_cents
+
+        Args:
+            orphan: Die Waisen-Position
+
+        Returns:
+            True wenn Position geschlossen werden sollte
+        """
+        pass
+
     # ==================== STATUS ====================
 
     @abstractmethod
@@ -750,3 +816,75 @@ class TradingBotAPIAdapter(ControllerAPI):
             'total_value': 0,
             'day_pnl': 0,
         }
+
+    # ==================== WAISEN-POSITIONEN (ORPHAN POSITIONS) ====================
+
+    def get_orphan_positions(self) -> List[Dict[str, Any]]:
+        """
+        Holt alle offenen Waisen-Positionen.
+
+        Returns:
+            Liste von Waisen-Positionen
+        """
+        if hasattr(self._bot, 'get_orphan_positions'):
+            return self._bot.get_orphan_positions()
+        return []
+
+    def close_orphan_position(self, orphan_id: str) -> bool:
+        """
+        Schließt eine Waisen-Position durch Market-Order.
+
+        Args:
+            orphan_id: ID der Waisen-Position
+
+        Returns:
+            True wenn Order platziert wurde
+        """
+        if hasattr(self._bot, 'close_orphan_position'):
+            return self._bot.close_orphan_position(orphan_id)
+        return False
+
+    def deactivate_level_keep_position(self, level_id: str, reason: str = "") -> bool:
+        """
+        Deaktiviert ein aktives Level, behält aber die Position als Waise.
+
+        Args:
+            level_id: ID des zu deaktivierenden Levels
+            reason: Grund für die Deaktivierung
+
+        Returns:
+            True wenn erfolgreich
+        """
+        if hasattr(self._bot, 'deactivate_level_keep_position'):
+            return self._bot.deactivate_level_keep_position(level_id, reason)
+        return False
+
+    def should_close_orphan(self, orphan: Dict[str, Any]) -> bool:
+        """
+        Prüft ob eine Waisen-Position geschlossen werden sollte.
+
+        Kriterium: Gewinn pro Aktie >= min_profit_cents
+
+        Args:
+            orphan: Die Waisen-Position
+
+        Returns:
+            True wenn Position geschlossen werden sollte
+        """
+        if hasattr(self._bot, 'should_close_orphan'):
+            return self._bot.should_close_orphan(orphan)
+
+        # Fallback-Logik
+        profit_per_share = orphan.get('profit_per_share', 0)
+        min_profit_cents = orphan.get('min_profit_cents', 3) / 100  # Cent -> Dollar
+        return profit_per_share >= min_profit_cents
+
+    def update_orphan_prices(self, market_prices: Dict[str, float]):
+        """
+        Aktualisiert die Preise der Waisen-Positionen.
+
+        Args:
+            market_prices: Dict {symbol: current_price}
+        """
+        if hasattr(self._bot, 'update_orphan_position_prices'):
+            self._bot.update_orphan_position_prices(market_prices)
