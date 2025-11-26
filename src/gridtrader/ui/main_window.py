@@ -11,6 +11,7 @@ from gridtrader.ui.widgets.enhanced_live_widget import EnhancedLiveDataWidget
 from gridtrader.ui.widgets.advanced_backtest_widget import AdvancedBacktestWidget
 from gridtrader.ui.widgets.trading_bot_widget import TradingBotWidget
 from gridtrader.ui.widgets.ibkr_trading_widget import IBKRTradingWidget
+from gridtrader.ui.widgets.ki_controller_widget import KIControllerWidget
 from gridtrader.infrastructure.brokers.ibkr.shared_connection import shared_connection
 from gridtrader.ui.styles import (
     TITLE_STYLE, GROUPBOX_STYLE, TABLE_STYLE, TAB_STYLE, LIST_STYLE,
@@ -41,6 +42,7 @@ class MainWindow(QMainWindow):
         self._create_dashboard()
         self._create_backtest()
         self._create_trading_bot()
+        self._create_ki_controller()  # KI-Controller Tab
         self._create_live()
         self._create_trading()
         self._create_reports()
@@ -387,6 +389,18 @@ class MainWindow(QMainWindow):
             self.backtest_widget.export_to_trading_bot.connect(
                 self.trading_bot_widget.import_scenarios
             )
+
+    def _create_ki_controller(self):
+        """Erstellt den KI-Controller Tab"""
+        # KI-Controller Widget mit Referenz zum Trading-Bot
+        self.ki_controller_widget = KIControllerWidget(
+            trading_bot_widget=self.trading_bot_widget if hasattr(self, 'trading_bot_widget') else None
+        )
+        self.tabs.addTab(self.ki_controller_widget, "KI-Controller")
+
+        # Verbinde Trading-Bot mit KI-Controller
+        if hasattr(self, 'trading_bot_widget'):
+            self.ki_controller_widget.set_trading_bot(self.trading_bot_widget)
 
     def _create_live(self):
         # Use the Live Data Widget

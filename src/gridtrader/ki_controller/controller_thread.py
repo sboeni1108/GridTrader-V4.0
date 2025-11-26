@@ -1,0 +1,925 @@
+"""
+KI-Controller Thread
+
+Der Haupt-Worker-Thread des KI-Controllers.
+Läuft autonom und kommuniziert über Signals mit dem Haupt-Thread.
+"""
+
+import time
+import uuid
+from datetime import datetime, timedelta
+from typing import Optional, Dict, Any, List, Callable
+from decimal import Decimal
+from threading import Event
+
+from PySide6.QtCore import QThread, Signal, QMutex, QMutexLocker
+
+from .config import KIControllerConfig, ControllerMode, VolatilityRegime
+from .state import (
+    KIControllerState, ControllerStatus, MarketState,
+    ActiveLevelInfo, DecisionRecord, PendingAlert, PerformanceStats
+)
+
+# Timezone support
+try:
+    from zoneinfo import ZoneInfo
+    NY_TZ = ZoneInfo("America/New_York")
+except ImportError:
+    import pytz
+    NY_TZ = pytz.timezone("America/New_York")
+
+
+class KIControllerSignals:
+    """Container für alle Signals des Controllers"""
+    pass
+
+
+class KIControllerThread(QThread):
+    """
+    Worker-Thread für den KI-Trading-Controller
+
+    Führt kontinuierlich folgende Aufgaben aus:
+    1. Marktdaten analysieren (ATR, Volatilität, Volumen)
+    2. Muster erkennen und mit Historie vergleichen
+    3. Optimale Level-Kombination berechnen
+    4. Entscheidungen treffen und ausführen (oder Alert senden)
+    5. Risiko-Limits überwachen
+    """
+
+    # ==================== SIGNALS ====================
+
+    # Status Updates
+    status_changed = Signal(str, str)  # (status, message)
+    heartbeat = Signal()               # Periodischer Heartbeat
+
+    # Entscheidungen
+    decision_made = Signal(dict)       # Neue Entscheidung getroffen
+    alert_created = Signal(dict)       # Alert für User (im Alert-Modus)
+
+    # Aktionen (für Trading-Bot)
+    request_activate_level = Signal(dict)    # Level aktivieren
+    request_deactivate_level = Signal(str)   # Level deaktivieren (level_id)
+    request_stop_trade = Signal(str)         # Trade stoppen (level_id)
+    request_close_position = Signal(str, int)  # Position schließen (symbol, qty)
+    request_emergency_stop = Signal()        # Alles sofort stoppen!
+
+    # Analyse-Updates (für UI)
+    market_analysis_update = Signal(dict)    # Aktuelle Markt-Analyse
+    volatility_regime_changed = Signal(str, str)  # (symbol, regime)
+    pattern_detected = Signal(dict)          # Muster erkannt
+
+    # Risiko-Warnungen
+    soft_limit_warning = Signal(str, float)  # (limit_name, current_value)
+    hard_limit_reached = Signal(str)         # (limit_name)
+
+    # Logging
+    log_message = Signal(str, str)  # (message, level: INFO/WARNING/ERROR/SUCCESS)
+
+    def __init__(self, config: Optional[KIControllerConfig] = None):
+        super().__init__()
+
+        # Konfiguration
+        self.config = config or KIControllerConfig.load()
+
+        # State
+        self.state = KIControllerState()
+        self.state.session_id = str(uuid.uuid4())[:8]
+        self.state.session_start = datetime.now()
+
+        # Thread-Kontrolle
+        self._stop_event = Event()
+        self._pause_event = Event()
+        self._mutex = QMutex()
+
+        # Level-Pool Referenz (wird von außen gesetzt)
+        self._level_pool: Dict[str, dict] = {}
+
+        # Callbacks für Trading-Bot API
+        self._trading_bot_api: Optional['ControllerAPI'] = None
+
+        # Analyse-Cache
+        self._candle_cache: Dict[str, List[dict]] = {}  # Symbol -> Liste von Kerzen
+        self._price_history: Dict[str, List[tuple]] = {}  # Symbol -> [(timestamp, price), ...]
+
+        # Decision-Tracking
+        self._last_decision_time: Dict[str, datetime] = {}
+        self._pending_confirmations: Dict[str, PendingAlert] = {}
+
+    # ==================== THREAD LIFECYCLE ====================
+
+    def run(self):
+        """Haupt-Loop des Worker-Threads"""
+        self._log("KI-Controller gestartet", "INFO")
+        self._update_status(ControllerStatus.STARTING, "Initialisierung...")
+
+        try:
+            # Initialisierung
+            self._initialize()
+            self._update_status(ControllerStatus.RUNNING, "Bereit")
+
+            # Haupt-Loop
+            while not self._stop_event.is_set():
+                loop_start = time.time()
+
+                # Pause-Check
+                if self._pause_event.is_set():
+                    self._update_status(ControllerStatus.PAUSED, "Pausiert")
+                    time.sleep(0.5)
+                    continue
+
+                # Heartbeat
+                self.state.update_heartbeat()
+                self.heartbeat.emit()
+
+                # Handelszeiten prüfen
+                self._check_trading_hours()
+
+                if self.state.is_market_hours and self.config.mode != ControllerMode.OFF:
+                    # Hauptarbeit nur während Handelszeiten und wenn aktiv
+                    self._main_cycle()
+
+                # Loop-Timing (Config-basiertes Intervall)
+                elapsed = time.time() - loop_start
+                sleep_time = max(0.1, self.config.analysis.reevaluation_interval - elapsed)
+                time.sleep(sleep_time)
+
+        except Exception as e:
+            self._log(f"Kritischer Fehler im Controller: {e}", "ERROR")
+            self._update_status(ControllerStatus.ERROR, str(e))
+
+        finally:
+            self._cleanup()
+            self._log("KI-Controller beendet", "INFO")
+
+    def stop(self):
+        """Stoppt den Controller-Thread"""
+        self._log("Stop-Signal empfangen", "INFO")
+        self._stop_event.set()
+
+    def pause(self):
+        """Pausiert den Controller"""
+        self._pause_event.set()
+        self._log("Controller pausiert", "INFO")
+
+    def resume(self):
+        """Setzt den Controller fort"""
+        self._pause_event.clear()
+        self._log("Controller fortgesetzt", "INFO")
+
+    # ==================== INITIALIZATION ====================
+
+    def _initialize(self):
+        """Initialisiert den Controller"""
+        # Config validieren
+        is_valid, errors = self.config.validate()
+        if not is_valid:
+            for error in errors:
+                self._log(f"Config-Fehler: {error}", "WARNING")
+
+        # State laden (falls vorhanden)
+        # self.state = KIControllerState.load()  # Optional: State wiederherstellen
+
+        # Performance-Stats für neuen Tag zurücksetzen
+        self.state.reset_daily_stats()
+
+        self._log(f"Modus: {self.config.mode.value}", "INFO")
+        self._log(f"Paper Trading: {'Ja' if self.config.paper_trading_mode else 'NEIN - LIVE!'}", "INFO")
+
+    def _cleanup(self):
+        """Aufräumen beim Beenden"""
+        # State speichern
+        try:
+            self.state.save()
+            self._log("State gespeichert", "INFO")
+        except Exception as e:
+            self._log(f"Fehler beim State-Speichern: {e}", "ERROR")
+
+    # ==================== MAIN CYCLE ====================
+
+    def _main_cycle(self):
+        """
+        Haupt-Arbeitszyklus
+
+        1. Marktdaten aktualisieren
+        2. Analyse durchführen
+        3. Entscheidungen treffen
+        4. Risiko prüfen
+        5. Aktionen ausführen
+        """
+        try:
+            # 1. Marktdaten aktualisieren
+            self._update_market_data()
+
+            # 2. Analyse
+            for symbol in self.state.market_states.keys():
+                self._analyze_symbol(symbol)
+
+            # 3. Entscheidungen (für jedes Symbol)
+            for symbol in self.state.market_states.keys():
+                self._make_decisions(symbol)
+
+            # 4. Risiko-Check
+            self._check_risk_limits()
+
+            # 5. Pending Alerts prüfen (Timeout)
+            self._check_pending_alerts()
+
+            # 6. State periodisch speichern
+            if datetime.now().second % 30 == 0:  # Alle 30 Sekunden
+                self.state.save()
+
+        except Exception as e:
+            self._log(f"Fehler im Main Cycle: {e}", "ERROR")
+
+    # ==================== MARKET DATA ====================
+
+    def _update_market_data(self):
+        """
+        Aktualisiert Marktdaten für alle überwachten Symbole
+
+        Hinweis: Die tatsächlichen Daten kommen vom Trading-Bot via API.
+        Diese Methode holt sie ab und verarbeitet sie.
+        """
+        if self._trading_bot_api is None:
+            return
+
+        # Symbole aus aktiven Levels ermitteln
+        symbols = set()
+        for level in self.state.active_levels.values():
+            symbols.add(level.symbol)
+
+        # Auch Symbole aus Level-Pool
+        for level_data in self._level_pool.values():
+            if 'symbol' in level_data:
+                symbols.add(level_data['symbol'])
+
+        # Marktdaten abrufen
+        for symbol in symbols:
+            try:
+                data = self._trading_bot_api.get_market_data(symbol)
+                if data:
+                    self._process_market_data(symbol, data)
+            except Exception as e:
+                self._log(f"Fehler bei Marktdaten für {symbol}: {e}", "ERROR")
+
+    def _process_market_data(self, symbol: str, data: dict):
+        """Verarbeitet empfangene Marktdaten"""
+        with QMutexLocker(self._mutex):
+            if symbol not in self.state.market_states:
+                self.state.market_states[symbol] = MarketState(symbol=symbol)
+
+            ms = self.state.market_states[symbol]
+
+            # Basis-Daten aktualisieren
+            if 'price' in data:
+                ms.current_price = Decimal(str(data['price']))
+            if 'bid' in data:
+                ms.bid = Decimal(str(data['bid']))
+            if 'ask' in data:
+                ms.ask = Decimal(str(data['ask']))
+            if 'volume' in data:
+                ms.volume_today = data['volume']
+
+            # Spread berechnen
+            if ms.bid > 0 and ms.ask > 0:
+                ms.spread_pct = float((ms.ask - ms.bid) / ms.bid * 100)
+
+            ms.last_update = datetime.now()
+
+            # Preis-Historie aktualisieren
+            if symbol not in self._price_history:
+                self._price_history[symbol] = []
+            self._price_history[symbol].append((datetime.now(), float(ms.current_price)))
+
+            # Nur letzte 1000 Preise behalten
+            if len(self._price_history[symbol]) > 1000:
+                self._price_history[symbol] = self._price_history[symbol][-1000:]
+
+    def receive_market_data(self, symbol: str, data: dict):
+        """
+        Empfängt Marktdaten vom Trading-Bot (wird von außen aufgerufen)
+
+        Diese Methode ist Thread-safe und kann vom Haupt-Thread aufgerufen werden.
+        """
+        self._process_market_data(symbol, data)
+
+    # ==================== ANALYSIS ====================
+
+    def _analyze_symbol(self, symbol: str):
+        """
+        Führt Analyse für ein Symbol durch
+
+        - ATR berechnen
+        - Volatilitäts-Regime bestimmen
+        - Preis-Änderungen tracken
+        """
+        if symbol not in self.state.market_states:
+            return
+
+        ms = self.state.market_states[symbol]
+
+        # Preis-Historie für Analyse
+        history = self._price_history.get(symbol, [])
+        if len(history) < 5:
+            return  # Zu wenig Daten
+
+        # Preis-Änderungen berechnen
+        now = datetime.now()
+        self._calculate_price_changes(ms, history, now)
+
+        # Volatilität (vereinfacht - wird in Phase 2 ausgebaut)
+        self._calculate_volatility(ms, history)
+
+        # Volatilitäts-Regime bestimmen
+        old_regime = ms.volatility_regime
+        ms.volatility_regime = self._determine_volatility_regime(ms)
+
+        if old_regime != ms.volatility_regime:
+            self.volatility_regime_changed.emit(symbol, ms.volatility_regime.value)
+            self._log(f"{symbol}: Volatilitäts-Regime → {ms.volatility_regime.value}", "INFO")
+
+        # Analyse-Update senden
+        self.market_analysis_update.emit({
+            'symbol': symbol,
+            'price': float(ms.current_price),
+            'volatility_regime': ms.volatility_regime.value,
+            'atr_5': ms.atr_5,
+            'price_change_5min': ms.price_change_5min,
+        })
+
+    def _calculate_price_changes(self, ms: MarketState, history: List[tuple], now: datetime):
+        """Berechnet Preis-Änderungen über verschiedene Zeiträume"""
+        current = float(ms.current_price) if ms.current_price > 0 else 0
+
+        for minutes, attr_name in [(1, 'price_change_1min'), (5, 'price_change_5min'), (15, 'price_change_15min')]:
+            cutoff = now - timedelta(minutes=minutes)
+            past_prices = [p for t, p in history if t >= cutoff]
+
+            if past_prices and past_prices[0] > 0:
+                change = (current - past_prices[0]) / past_prices[0] * 100
+                setattr(ms, attr_name, change)
+
+    def _calculate_volatility(self, ms: MarketState, history: List[tuple]):
+        """
+        Berechnet Volatilität (vereinfachte Version)
+
+        In Phase 2 wird dies durch echte ATR-Berechnung mit Kerzen ersetzt.
+        """
+        if len(history) < 10:
+            return
+
+        # Letzte N Preise
+        recent_prices = [p for _, p in history[-50:]]
+
+        if len(recent_prices) >= 5:
+            # Einfache Volatilität: Standardabweichung / Mittelwert
+            import statistics
+            mean = statistics.mean(recent_prices)
+            if mean > 0:
+                std = statistics.stdev(recent_prices) if len(recent_prices) > 1 else 0
+                ms.atr_5 = (std / mean) * 100  # Als Prozent
+
+    def _determine_volatility_regime(self, ms: MarketState) -> VolatilityRegime:
+        """Bestimmt das Volatilitäts-Regime basierend auf Analyse"""
+        # Kombiniere ATR und kurzfristige Preisänderungen
+        volatility_score = abs(ms.atr_5) + abs(ms.price_change_5min) / 2
+
+        if volatility_score > 2.0:
+            return VolatilityRegime.HIGH
+        elif volatility_score > 0.5:
+            return VolatilityRegime.MEDIUM
+        elif volatility_score > 0:
+            return VolatilityRegime.LOW
+        else:
+            return VolatilityRegime.UNKNOWN
+
+    # ==================== DECISION MAKING ====================
+
+    def _make_decisions(self, symbol: str):
+        """
+        Trifft Entscheidungen für ein Symbol
+
+        1. Aktuellen Zustand bewerten
+        2. Optimale Level-Kombination berechnen
+        3. Änderungen identifizieren
+        4. Entscheidungen ausführen oder Alert senden
+        """
+        if self.config.mode == ControllerMode.OFF:
+            return
+
+        # Anti-Overtrading Check
+        if not self._can_make_change():
+            return
+
+        # Mindest-Haltezeit prüfen
+        last_decision = self._last_decision_time.get(symbol)
+        if last_decision:
+            elapsed = (datetime.now() - last_decision).total_seconds()
+            if elapsed < self.config.decision.min_combination_hold_time_sec:
+                return  # Zu früh für neue Entscheidung
+
+        ms = self.state.market_states.get(symbol)
+        if not ms or ms.current_price <= 0:
+            return
+
+        # Aktuelle aktive Levels für dieses Symbol
+        current_levels = self.state.get_active_levels_for_symbol(symbol)
+
+        # Verfügbare Levels aus Pool
+        available_levels = self._get_available_levels_for_symbol(symbol)
+
+        if not available_levels:
+            return  # Keine Levels verfügbar
+
+        # Optimale Kombination berechnen (vereinfacht - wird in Phase 3 ausgebaut)
+        optimal_levels = self._calculate_optimal_levels(
+            symbol, ms, available_levels, current_levels
+        )
+
+        # Änderungen identifizieren
+        levels_to_activate = self._identify_levels_to_activate(current_levels, optimal_levels)
+        levels_to_deactivate = self._identify_levels_to_deactivate(current_levels, optimal_levels)
+
+        # Entscheidungen ausführen
+        for level_data in levels_to_activate:
+            self._execute_activate_level(level_data, ms)
+
+        for level_info in levels_to_deactivate:
+            self._execute_deactivate_level(level_info)
+
+        # Entscheidungszeit merken
+        if levels_to_activate or levels_to_deactivate:
+            self._last_decision_time[symbol] = datetime.now()
+
+    def _get_available_levels_for_symbol(self, symbol: str) -> List[dict]:
+        """Gibt alle verfügbaren Levels aus dem Pool für ein Symbol zurück"""
+        return [
+            level for level in self._level_pool.values()
+            if level.get('symbol') == symbol
+        ]
+
+    def _calculate_optimal_levels(
+        self,
+        symbol: str,
+        market_state: MarketState,
+        available_levels: List[dict],
+        current_levels: List[ActiveLevelInfo]
+    ) -> List[dict]:
+        """
+        Berechnet die optimale Level-Kombination
+
+        Dies ist die Kern-Intelligenz des Controllers.
+        Vereinfachte Version für Phase 1 - wird in Phase 3 massiv erweitert.
+        """
+        optimal = []
+        current_price = float(market_state.current_price)
+
+        if current_price <= 0:
+            return optimal
+
+        # Scoring für jedes verfügbare Level
+        scored_levels = []
+        for level in available_levels:
+            score = self._score_level(level, market_state)
+            scored_levels.append((score, level))
+
+        # Sortiere nach Score (höchster zuerst)
+        scored_levels.sort(key=lambda x: x[0], reverse=True)
+
+        # Wähle Top-N Levels unter Berücksichtigung der Balance
+        max_levels = self.config.decision.max_levels_per_decision
+        long_count = 0
+        short_count = 0
+
+        for score, level in scored_levels:
+            if len(optimal) >= max_levels:
+                break
+
+            if score < 0:  # Negative Scores ignorieren
+                continue
+
+            side = level.get('side', 'LONG')
+
+            # Long/Short Balance prüfen
+            total = long_count + short_count + 1
+            if side == 'LONG':
+                new_long_ratio = (long_count + 1) / total
+                if new_long_ratio > self.config.decision.long_short_ratio_max:
+                    continue
+                long_count += 1
+            else:
+                new_short_ratio = (short_count + 1) / total
+                if new_short_ratio > self.config.decision.long_short_ratio_max:
+                    continue
+                short_count += 1
+
+            optimal.append(level)
+
+        return optimal
+
+    def _score_level(self, level: dict, market_state: MarketState) -> float:
+        """
+        Bewertet ein einzelnes Level
+
+        Score-Faktoren:
+        - Abstand zum aktuellen Preis
+        - Passend zum Volatilitäts-Regime
+        - Profit-Potenzial
+        """
+        score = 0.0
+        current_price = float(market_state.current_price)
+
+        if current_price <= 0:
+            return -1
+
+        entry_price = level.get('entry_price', 0)
+        exit_price = level.get('exit_price', 0)
+        side = level.get('side', 'LONG')
+
+        if not entry_price or not exit_price:
+            return -1
+
+        # 1. Abstand zum Entry (näher = besser, aber nicht zu nah)
+        entry_distance_pct = abs(entry_price - current_price) / current_price * 100
+
+        if entry_distance_pct < 0.1:
+            score -= 10  # Zu nah am Entry
+        elif entry_distance_pct < 0.5:
+            score += 30  # Guter Abstand
+        elif entry_distance_pct < 1.0:
+            score += 20
+        elif entry_distance_pct < 2.0:
+            score += 10
+        else:
+            score -= 5  # Zu weit weg
+
+        # 2. Profit-Potenzial
+        if side == 'LONG':
+            profit_pct = (exit_price - entry_price) / entry_price * 100
+        else:
+            profit_pct = (entry_price - exit_price) / entry_price * 100
+
+        if profit_pct > self.config.decision.min_profit_margin_pct:
+            score += profit_pct * 10
+
+        # 3. Volatilitäts-Anpassung
+        regime = market_state.volatility_regime
+
+        # Größere Steps bei hoher Volatilität bevorzugen
+        step_pct = abs(exit_price - entry_price) / entry_price * 100
+
+        if regime == VolatilityRegime.HIGH:
+            if step_pct > 0.8:
+                score += 20  # Große Steps bei hoher Vola
+            elif step_pct < 0.3:
+                score -= 10  # Kleine Steps vermeiden
+        elif regime == VolatilityRegime.LOW:
+            if step_pct < 0.4:
+                score += 20  # Kleine Steps bei niedriger Vola
+            elif step_pct > 0.8:
+                score -= 10  # Große Steps vermeiden
+
+        return score
+
+    def _identify_levels_to_activate(
+        self,
+        current: List[ActiveLevelInfo],
+        optimal: List[dict]
+    ) -> List[dict]:
+        """Identifiziert Levels, die aktiviert werden sollen"""
+        current_ids = {l.level_id for l in current}
+        to_activate = []
+
+        for level in optimal:
+            level_id = level.get('level_id', '')
+            if level_id and level_id not in current_ids:
+                to_activate.append(level)
+
+        return to_activate
+
+    def _identify_levels_to_deactivate(
+        self,
+        current: List[ActiveLevelInfo],
+        optimal: List[dict]
+    ) -> List[ActiveLevelInfo]:
+        """Identifiziert Levels, die deaktiviert werden sollen"""
+        optimal_ids = {l.get('level_id', '') for l in optimal}
+        to_deactivate = []
+
+        for level_info in current:
+            if level_info.level_id not in optimal_ids:
+                # Mindest-Haltezeit prüfen
+                if level_info.activated_at:
+                    held_seconds = (datetime.now() - level_info.activated_at).total_seconds()
+                    if held_seconds >= self.config.decision.min_level_hold_time_sec:
+                        to_deactivate.append(level_info)
+
+        return to_deactivate
+
+    # ==================== EXECUTION ====================
+
+    def _execute_activate_level(self, level_data: dict, market_state: MarketState):
+        """Führt Level-Aktivierung aus oder erstellt Alert"""
+        decision = DecisionRecord(
+            timestamp=datetime.now(),
+            decision_type="ACTIVATE_LEVEL",
+            symbol=level_data.get('symbol', ''),
+            details=level_data,
+            reason=f"Score-basierte Auswahl bei {market_state.volatility_regime.value} Volatilität",
+            market_state_snapshot=market_state.to_dict(),
+        )
+
+        if self.config.mode == ControllerMode.ALERT and self.config.alerts.confirm_activate_level:
+            # Alert-Modus: User-Bestätigung anfordern
+            self._create_alert(decision)
+        else:
+            # Autonom oder keine Bestätigung nötig: Direkt ausführen
+            self._do_activate_level(level_data, decision)
+
+    def _do_activate_level(self, level_data: dict, decision: DecisionRecord):
+        """Führt die tatsächliche Level-Aktivierung durch"""
+        level_id = level_data.get('level_id', str(uuid.uuid4())[:8])
+
+        # ActiveLevelInfo erstellen
+        level_info = ActiveLevelInfo(
+            level_id=level_id,
+            scenario_name=level_data.get('scenario_name', 'Unknown'),
+            symbol=level_data.get('symbol', ''),
+            side=level_data.get('side', 'LONG'),
+            level_num=level_data.get('level_num', 0),
+            entry_price=Decimal(str(level_data.get('entry_price', 0))),
+            exit_price=Decimal(str(level_data.get('exit_price', 0))),
+            shares=level_data.get('shares', 100),
+            activated_at=datetime.now(),
+            score=level_data.get('score', 0),
+            reason=decision.reason,
+        )
+
+        # Zum State hinzufügen
+        with QMutexLocker(self._mutex):
+            self.state.active_levels[level_id] = level_info
+            self.state.performance.activations_today += 1
+            self.state.performance.record_change()
+
+        # Entscheidung protokollieren
+        decision.executed = True
+        decision.execution_result = "Level aktiviert"
+        self.state.add_decision(decision)
+
+        # Signal an Trading-Bot senden
+        self.request_activate_level.emit(level_data)
+        self.decision_made.emit(decision.to_dict())
+
+        self._log(f"Level aktiviert: {level_info.symbol} {level_info.side} L{level_info.level_num}", "SUCCESS")
+
+    def _execute_deactivate_level(self, level_info: ActiveLevelInfo):
+        """Führt Level-Deaktivierung aus oder erstellt Alert"""
+        decision = DecisionRecord(
+            timestamp=datetime.now(),
+            decision_type="DEACTIVATE_LEVEL",
+            symbol=level_info.symbol,
+            details={'level_id': level_info.level_id, 'level_num': level_info.level_num},
+            reason="Nicht mehr optimal basierend auf aktueller Analyse",
+        )
+
+        if self.config.mode == ControllerMode.ALERT and self.config.alerts.confirm_deactivate_level:
+            self._create_alert(decision)
+        else:
+            self._do_deactivate_level(level_info, decision)
+
+    def _do_deactivate_level(self, level_info: ActiveLevelInfo, decision: DecisionRecord):
+        """Führt die tatsächliche Level-Deaktivierung durch"""
+        level_id = level_info.level_id
+
+        with QMutexLocker(self._mutex):
+            if level_id in self.state.active_levels:
+                self.state.active_levels[level_id].is_active = False
+                del self.state.active_levels[level_id]
+                self.state.performance.deactivations_today += 1
+                self.state.performance.record_change()
+
+        decision.executed = True
+        decision.execution_result = "Level deaktiviert"
+        self.state.add_decision(decision)
+
+        self.request_deactivate_level.emit(level_id)
+        self.decision_made.emit(decision.to_dict())
+
+        self._log(f"Level deaktiviert: {level_info.symbol} {level_info.side} L{level_info.level_num}", "INFO")
+
+    # ==================== ALERTS ====================
+
+    def _create_alert(self, decision: DecisionRecord):
+        """Erstellt einen Alert für User-Bestätigung"""
+        alert_id = str(uuid.uuid4())[:8]
+        now = datetime.now()
+        expires = now + timedelta(seconds=self.config.alerts.confirmation_timeout)
+
+        alert = PendingAlert(
+            alert_id=alert_id,
+            created_at=now,
+            expires_at=expires,
+            decision=decision,
+        )
+
+        with QMutexLocker(self._mutex):
+            self.state.pending_alerts[alert_id] = alert
+            self._pending_confirmations[alert_id] = alert
+
+        self.state.status = ControllerStatus.ALERT_PENDING
+        self.alert_created.emit(alert.to_dict())
+
+        self._log(f"Alert erstellt: {decision.decision_type} - warte auf Bestätigung", "WARNING")
+
+    def confirm_alert(self, alert_id: str, confirmed: bool):
+        """
+        Bestätigt oder lehnt einen Alert ab
+
+        Wird von außen (UI) aufgerufen.
+        """
+        with QMutexLocker(self._mutex):
+            if alert_id not in self._pending_confirmations:
+                return
+
+            alert = self._pending_confirmations[alert_id]
+            alert.confirmed = confirmed
+            alert.response_time = datetime.now()
+
+            if confirmed:
+                # Entscheidung ausführen
+                decision = alert.decision
+                if decision.decision_type == "ACTIVATE_LEVEL":
+                    self._do_activate_level(decision.details, decision)
+                elif decision.decision_type == "DEACTIVATE_LEVEL":
+                    level_id = decision.details.get('level_id')
+                    if level_id in self.state.active_levels:
+                        self._do_deactivate_level(self.state.active_levels[level_id], decision)
+
+            # Aufräumen
+            del self._pending_confirmations[alert_id]
+            if alert_id in self.state.pending_alerts:
+                del self.state.pending_alerts[alert_id]
+
+            if not self._pending_confirmations:
+                self.state.status = ControllerStatus.RUNNING
+
+    def _check_pending_alerts(self):
+        """Prüft Timeout für pending Alerts"""
+        now = datetime.now()
+        expired = []
+
+        with QMutexLocker(self._mutex):
+            for alert_id, alert in self._pending_confirmations.items():
+                if now > alert.expires_at:
+                    expired.append(alert_id)
+
+            for alert_id in expired:
+                alert = self._pending_confirmations[alert_id]
+                alert.confirmed = False  # Timeout = abgelehnt
+                del self._pending_confirmations[alert_id]
+                if alert_id in self.state.pending_alerts:
+                    del self.state.pending_alerts[alert_id]
+
+                self._log(f"Alert Timeout: {alert.decision.decision_type} abgelehnt", "WARNING")
+
+            if not self._pending_confirmations and self.state.status == ControllerStatus.ALERT_PENDING:
+                self.state.status = ControllerStatus.RUNNING
+
+    # ==================== RISK MANAGEMENT ====================
+
+    def _check_risk_limits(self):
+        """Prüft alle Risiko-Limits"""
+        limits = self.config.risk_limits
+        perf = self.state.performance
+
+        # Daily Loss Check
+        total_loss = float(perf.realized_pnl_today + perf.unrealized_pnl)
+        if total_loss < 0:
+            loss = abs(total_loss)
+
+            # Soft Limit
+            soft_threshold = float(limits.max_daily_loss) * limits.soft_limit_threshold
+            if loss >= soft_threshold and not self.state.soft_limit_warning:
+                self.state.soft_limit_warning = True
+                self.soft_limit_warning.emit("max_daily_loss", loss)
+                self._log(f"Soft Limit Warnung: Tagesverlust ${loss:.2f}", "WARNING")
+
+            # Hard Limit
+            if loss >= float(limits.max_daily_loss):
+                self.hard_limit_reached.emit("max_daily_loss")
+                self._log(f"HARD LIMIT: Max Tagesverlust erreicht (${loss:.2f})", "ERROR")
+                self._trigger_emergency_stop("Max Tagesverlust erreicht")
+
+            # Emergency Threshold
+            if loss >= float(limits.emergency_loss_threshold):
+                self._trigger_emergency_stop("Emergency Loss Threshold erreicht")
+
+        # Active Levels Check
+        active_count = len(self.state.active_levels)
+        if active_count >= limits.max_active_levels:
+            self._log(f"Max aktive Levels erreicht ({active_count})", "WARNING")
+
+    def _trigger_emergency_stop(self, reason: str):
+        """Löst Emergency Stop aus"""
+        if self.state.emergency_stop_triggered:
+            return  # Bereits ausgelöst
+
+        self.state.emergency_stop_triggered = True
+        self._update_status(ControllerStatus.EMERGENCY, reason)
+
+        self._log(f"EMERGENCY STOP: {reason}", "ERROR")
+
+        # Signal senden
+        self.request_emergency_stop.emit()
+
+        # Alle aktiven Levels deaktivieren
+        for level_id in list(self.state.active_levels.keys()):
+            self.request_deactivate_level.emit(level_id)
+
+    # ==================== TRADING HOURS ====================
+
+    def _check_trading_hours(self):
+        """Prüft ob innerhalb der Handelszeiten"""
+        try:
+            ny_now = datetime.now(NY_TZ)
+            current_time = ny_now.time()
+
+            is_market_hours = (
+                self.config.trading_hours.market_open <= current_time <= self.config.trading_hours.market_close
+            )
+
+            # Wochenende?
+            if ny_now.weekday() >= 5:  # Samstag oder Sonntag
+                is_market_hours = False
+
+            if is_market_hours != self.state.is_market_hours:
+                self.state.is_market_hours = is_market_hours
+                if is_market_hours:
+                    self._log("Handelszeiten begonnen", "INFO")
+                else:
+                    self._log("Handelszeiten beendet", "INFO")
+
+        except Exception as e:
+            self._log(f"Fehler bei Handelszeitenprüfung: {e}", "ERROR")
+            self.state.is_market_hours = True  # Im Zweifel handeln
+
+    # ==================== UTILITY ====================
+
+    def _can_make_change(self) -> bool:
+        """Prüft ob eine Änderung erlaubt ist (Anti-Overtrading)"""
+        perf = self.state.performance
+
+        # Stunden-Limit prüfen
+        if perf.changes_this_hour >= self.config.decision.max_changes_per_hour:
+            return False
+
+        return True
+
+    def _update_status(self, status: ControllerStatus, message: str):
+        """Aktualisiert den Controller-Status"""
+        self.state.status = status
+        self.state.status_message = message
+        self.status_changed.emit(status.value, message)
+
+    def _log(self, message: str, level: str = "INFO"):
+        """Sendet Log-Nachricht"""
+        if self.config.log_all_decisions or level in ("ERROR", "WARNING"):
+            self.log_message.emit(message, level)
+
+    # ==================== EXTERNAL API ====================
+
+    def set_trading_bot_api(self, api: 'ControllerAPI'):
+        """Setzt die API-Referenz zum Trading-Bot"""
+        self._trading_bot_api = api
+
+    def set_level_pool(self, pool: Dict[str, dict]):
+        """Setzt den Level-Pool"""
+        with QMutexLocker(self._mutex):
+            self._level_pool = pool
+
+    def update_level_pool(self, level_id: str, level_data: dict):
+        """Aktualisiert ein einzelnes Level im Pool"""
+        with QMutexLocker(self._mutex):
+            self._level_pool[level_id] = level_data
+
+    def remove_from_level_pool(self, level_id: str):
+        """Entfernt ein Level aus dem Pool"""
+        with QMutexLocker(self._mutex):
+            if level_id in self._level_pool:
+                del self._level_pool[level_id]
+
+    def get_state_snapshot(self) -> dict:
+        """Gibt einen Snapshot des aktuellen States zurück"""
+        with QMutexLocker(self._mutex):
+            return self.state.to_dict()
+
+    def get_config(self) -> KIControllerConfig:
+        """Gibt die aktuelle Konfiguration zurück"""
+        return self.config
+
+    def update_config(self, new_config: KIControllerConfig):
+        """Aktualisiert die Konfiguration"""
+        with QMutexLocker(self._mutex):
+            self.config = new_config
+            self.config.save()
+        self._log("Konfiguration aktualisiert", "INFO")
