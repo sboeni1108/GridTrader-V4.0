@@ -9,6 +9,14 @@ from abc import ABC, abstractmethod
 from typing import Optional, Dict, List, Any, Callable
 from decimal import Decimal
 
+# IBKR Service Import
+try:
+    from gridtrader.infrastructure.brokers.ibkr.ibkr_service import get_ibkr_service, IBKRService
+    IBKR_AVAILABLE = True
+except ImportError:
+    IBKR_AVAILABLE = False
+    print("WARNUNG: IBKR Service nicht verfügbar")
+
 
 class ControllerAPI(ABC):
     """
@@ -256,17 +264,45 @@ class TradingBotAPIAdapter(ControllerAPI):
             trading_bot_widget: Referenz zum TradingBotWidget
         """
         self._bot = trading_bot_widget
-        self._ibkr_service = None
+        self._ibkr_service: Optional[IBKRService] = None
+        self._connect_ibkr_service()
+
+    def _connect_ibkr_service(self):
+        """Verbindet automatisch mit dem IBKR Service"""
+        if IBKR_AVAILABLE:
+            try:
+                self._ibkr_service = get_ibkr_service()
+                print("TradingBotAPIAdapter: IBKR Service verbunden")
+            except Exception as e:
+                print(f"TradingBotAPIAdapter: IBKR Service Fehler: {e}")
+                self._ibkr_service = None
 
     def set_ibkr_service(self, service):
-        """Setzt die IBKR Service Referenz"""
+        """Setzt die IBKR Service Referenz manuell"""
         self._ibkr_service = service
 
     # ==================== MARKET DATA ====================
 
     def get_market_data(self, symbol: str) -> Optional[Dict[str, Any]]:
         """Holt aktuelle Marktdaten"""
-        # Aus dem Cache des Trading-Bots
+        # Priorität 1: IBKR Service (Live Daten)
+        if self._ibkr_service and self._ibkr_service.is_connected():
+            try:
+                cached_data = self._ibkr_service.get_cached_market_data(symbol)
+                if cached_data:
+                    return {
+                        'price': cached_data.get('last', 0) or cached_data.get('close', 0),
+                        'bid': cached_data.get('bid', 0),
+                        'ask': cached_data.get('ask', 0),
+                        'volume': cached_data.get('volume', 0),
+                        'high': cached_data.get('high', 0),
+                        'low': cached_data.get('low', 0),
+                        'timestamp': cached_data.get('timestamp', ''),
+                    }
+            except Exception as e:
+                print(f"IBKR Market Data Fehler: {e}")
+
+        # Priorität 2: Trading-Bot Cache (Fallback)
         if hasattr(self._bot, '_last_market_prices'):
             price = self._bot._last_market_prices.get(symbol)
             if price:
@@ -277,14 +313,6 @@ class TradingBotAPIAdapter(ControllerAPI):
                     'volume': 0,
                 }
 
-        # Oder via IBKR Service
-        if self._ibkr_service and self._ibkr_service.is_connected():
-            try:
-                # Market Data Request (wenn implementiert)
-                pass
-            except Exception:
-                pass
-
         return None
 
     def get_historical_data(
@@ -293,10 +321,79 @@ class TradingBotAPIAdapter(ControllerAPI):
         days: int = 30,
         timeframe: str = "1min"
     ) -> Optional[List[Dict[str, Any]]]:
-        """Holt historische Daten"""
-        # TODO: Implementierung für Phase 2 (Pattern Matching)
-        # Kann aus lokaler Datenbank oder IBKR geholt werden
-        return None
+        """
+        Holt historische Daten für Pattern-Matching.
+
+        Args:
+            symbol: Aktien-Symbol
+            days: Anzahl Tage (max 365)
+            timeframe: Kerzengröße ("1min", "5min", "15min", "30min", "1hour", "1day")
+
+        Returns:
+            Liste von Kerzen mit timestamp, open, high, low, close, volume
+        """
+        if not self._ibkr_service or not self._ibkr_service.is_connected():
+            print(f"Keine IBKR Verbindung für historische Daten ({symbol})")
+            return None
+
+        try:
+            # Duration String erstellen
+            if days <= 1:
+                duration = "1 D"
+            elif days <= 7:
+                duration = f"{days} D"
+            elif days <= 30:
+                duration = f"{days} D"
+            elif days <= 365:
+                duration = f"{days} D"
+            else:
+                duration = "365 D"  # Max 1 Jahr
+
+            # Bar Size konvertieren
+            bar_size_map = {
+                "1min": "1 min",
+                "5min": "5 mins",
+                "15min": "15 mins",
+                "30min": "30 mins",
+                "1hour": "1 hour",
+                "1day": "1 day",
+            }
+            bar_size = bar_size_map.get(timeframe, "1 min")
+
+            print(f"Hole historische Daten: {symbol}, {duration}, {bar_size}")
+
+            # IBKR Service aufrufen (blocking)
+            df = self._ibkr_service.get_historical_data(
+                symbol=symbol,
+                duration=duration,
+                bar_size=bar_size,
+                what_to_show="TRADES",
+                use_rth=True,
+                timeout=60.0
+            )
+
+            if df is None or df.empty:
+                print(f"Keine historischen Daten für {symbol}")
+                return None
+
+            # DataFrame zu Liste von Dicts konvertieren
+            result = []
+            for idx, row in df.iterrows():
+                result.append({
+                    'timestamp': idx.isoformat() if hasattr(idx, 'isoformat') else str(idx),
+                    'open': float(row['open']),
+                    'high': float(row['high']),
+                    'low': float(row['low']),
+                    'close': float(row['close']),
+                    'volume': int(row['volume']),
+                })
+
+            print(f"Historische Daten erhalten: {len(result)} Kerzen für {symbol}")
+            return result
+
+        except Exception as e:
+            print(f"Fehler beim Abruf historischer Daten für {symbol}: {e}")
+            return None
 
     # ==================== LEVEL POOL ====================
 
@@ -424,9 +521,51 @@ class TradingBotAPIAdapter(ControllerAPI):
     # ==================== TRADE MANAGEMENT ====================
 
     def stop_trade(self, level_id: str) -> bool:
-        """Stoppt einen laufenden Trade"""
-        # TODO: Implementierung für Order-Cancellation
-        return False
+        """
+        Stoppt einen laufenden Trade (cancelt pending Entry-Order).
+
+        Args:
+            level_id: ID des Levels dessen Trade gestoppt werden soll
+
+        Returns:
+            True wenn erfolgreich
+        """
+        try:
+            # Level in waiting_levels suchen
+            if hasattr(self._bot, 'waiting_levels'):
+                for i, level in enumerate(self._bot.waiting_levels):
+                    l_id = f"{level.get('scenario_name', '')}_{level.get('level_num', 0)}_{level.get('side', 'LONG')}"
+                    if l_id == level_id:
+                        # Wenn eine Order-ID existiert, canceln
+                        order_id = level.get('broker_order_id')
+                        if order_id and self._ibkr_service and self._ibkr_service.is_connected():
+                            self._ibkr_service.cancel_order(order_id)
+                            print(f"Order {order_id} für Level {level_id} gecancelt")
+
+                        # Level aus waiting_levels entfernen
+                        self._bot.waiting_levels.pop(i)
+                        if hasattr(self._bot, '_update_waiting_table'):
+                            self._bot._update_waiting_table()
+                        return True
+
+            # Level in active_levels suchen
+            if hasattr(self._bot, 'active_levels'):
+                for i, level in enumerate(self._bot.active_levels):
+                    l_id = f"{level.get('scenario_name', '')}_{level.get('level_num', 0)}_{level.get('side', 'LONG')}"
+                    if l_id == level_id:
+                        # Exit-Order canceln falls vorhanden
+                        exit_order_id = level.get('exit_order_id')
+                        if exit_order_id and self._ibkr_service and self._ibkr_service.is_connected():
+                            self._ibkr_service.cancel_order(exit_order_id)
+                            print(f"Exit-Order {exit_order_id} für Level {level_id} gecancelt")
+                        return True
+
+            print(f"Level {level_id} nicht gefunden für stop_trade")
+            return False
+
+        except Exception as e:
+            print(f"Fehler bei stop_trade für {level_id}: {e}")
+            return False
 
     def close_position(
         self,
@@ -434,24 +573,66 @@ class TradingBotAPIAdapter(ControllerAPI):
         quantity: int,
         order_type: str = "MARKET"
     ) -> bool:
-        """Schließt eine offene Position"""
+        """
+        Schließt eine offene Position.
+
+        Args:
+            symbol: Symbol
+            quantity: Anzahl Aktien (positiv)
+            order_type: "MARKET" oder "LIMIT"
+
+        Returns:
+            True wenn Order platziert
+        """
         if not self._ibkr_service or not self._ibkr_service.is_connected():
+            print(f"Kann Position {symbol} nicht schließen - nicht verbunden")
             return False
 
         try:
-            # Market Order zum Schließen
-            # TODO: Über IBKRService implementieren
-            return False
+            from gridtrader.domain.models.order import Order, OrderSide, OrderType as OT, OrderStatus
+
+            # Bestimme Seite der Position
+            positions = self.get_open_positions()
+            if symbol not in positions:
+                print(f"Keine offene Position für {symbol}")
+                return False
+
+            position = positions[symbol]
+            pos_side = position.get('side', 'LONG')
+
+            # Gegenorder erstellen
+            if pos_side == 'LONG':
+                order_side = OrderSide.SELL
+            else:
+                order_side = OrderSide.BUY
+
+            close_order = Order(
+                symbol=symbol,
+                side=order_side,
+                quantity=quantity,
+                order_type=OT.MARKET if order_type == "MARKET" else OT.LIMIT,
+            )
+
+            # Order platzieren
+            callback_id = self._ibkr_service.place_order(close_order)
+            print(f"Close-Order für {symbol} platziert: {callback_id}")
+
+            return True
 
         except Exception as e:
-            print(f"Fehler beim Position-Close: {e}")
+            print(f"Fehler beim Schließen der Position {symbol}: {e}")
             return False
 
     def get_open_positions(self) -> Dict[str, Dict[str, Any]]:
         """Holt alle offenen Positionen"""
         positions = {}
 
-        # Aus active_levels des Trading-Bots
+        # Priorität 1: IBKR Account Positionen
+        if self._ibkr_service and self._ibkr_service.is_connected():
+            # TODO: Account Positionen via Service abrufen
+            pass
+
+        # Priorität 2: Aus active_levels des Trading-Bots
         if hasattr(self._bot, 'active_levels'):
             for level in self._bot.active_levels:
                 symbol = level.get('symbol', '')
@@ -475,19 +656,54 @@ class TradingBotAPIAdapter(ControllerAPI):
         return []
 
     def cancel_order(self, order_id: str) -> bool:
-        """Cancelt eine Order"""
+        """
+        Cancelt eine Order.
+
+        Args:
+            order_id: Broker Order-ID
+
+        Returns:
+            True wenn erfolgreich
+        """
+        if not order_id:
+            return False
+
         if self._ibkr_service and self._ibkr_service.is_connected():
             try:
-                # TODO: Über IBKRService implementieren
-                return False
-            except Exception:
-                pass
+                self._ibkr_service.cancel_order(order_id)
+                print(f"Order {order_id} Cancel-Request gesendet")
+                return True
+            except Exception as e:
+                print(f"Fehler beim Canceln von Order {order_id}: {e}")
+
         return False
 
     def cancel_all_orders(self, symbol: Optional[str] = None) -> int:
-        """Cancelt alle Orders"""
-        # TODO: Implementierung
-        return 0
+        """
+        Cancelt alle Orders (optional für ein Symbol).
+
+        Args:
+            symbol: Optional - nur Orders für dieses Symbol
+
+        Returns:
+            Anzahl gecancelter Orders
+        """
+        cancelled = 0
+
+        # Pending Orders vom Trading-Bot
+        pending = self.get_pending_orders()
+        for order in pending:
+            order_symbol = order.get('symbol', '')
+            order_id = order.get('broker_order_id', order.get('order_id', ''))
+
+            if symbol and order_symbol != symbol:
+                continue
+
+            if order_id and self.cancel_order(order_id):
+                cancelled += 1
+
+        print(f"{cancelled} Orders gecancelt" + (f" für {symbol}" if symbol else ""))
+        return cancelled
 
     # ==================== EMERGENCY ====================
 
