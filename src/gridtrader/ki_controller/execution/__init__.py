@@ -2,7 +2,23 @@
 KI-Controller Execution Module
 
 Enthält:
-- Execution Manager
+- Execution Manager: Befehle an Trading-Bot, Queue, Retry-Logik
 """
 
-# Wird in Phase 4 implementiert
+from .execution_manager import (
+    ExecutionManager,
+    ExecutionCommand,
+    ExecutionStats,
+    CommandType,
+    CommandStatus,
+    ExecutionPriority,
+)
+
+__all__ = [
+    'ExecutionManager',
+    'ExecutionCommand',
+    'ExecutionStats',
+    'CommandType',
+    'CommandStatus',
+    'ExecutionPriority',
+]
