@@ -173,11 +173,8 @@ class KIControllerWidget(QWidget):
         self._mode_combo.setMinimumWidth(100)
         layout.addWidget(self._mode_combo)
 
-        # Paper Trading Checkbox
-        self._paper_check = QCheckBox("Paper Trading")
-        self._paper_check.setChecked(True)
-        self._paper_check.setToolTip("Im Paper Trading werden keine echten Orders platziert")
-        layout.addWidget(self._paper_check)
+        # Paper Trading wird durch IBKR-Verbindung bestimmt (Paper Account vs Live Account)
+        # Kein separates Checkbox mehr nötig
 
         # Start/Stop Button
         self._start_btn = QPushButton("Starten")
@@ -616,7 +613,6 @@ class KIControllerWidget(QWidget):
             }
         """)
         self._mode_combo.setEnabled(False)
-        self._paper_check.setEnabled(False)
 
         self.controller_started.emit()
         self._log("KI-Controller gestartet", "SUCCESS")
@@ -643,7 +639,6 @@ class KIControllerWidget(QWidget):
             }
         """)
         self._mode_combo.setEnabled(True)
-        self._paper_check.setEnabled(True)
         self._status_label.setText("Status: Gestoppt")
         self._status_label.setStyleSheet("font-weight: bold; padding: 5px; color: #666;")
 
@@ -906,9 +901,6 @@ class KIControllerWidget(QWidget):
         }.get(self._config.mode, 0)
         self._mode_combo.setCurrentIndex(mode_index)
 
-        # Paper Trading
-        self._paper_check.setChecked(self._config.paper_trading_mode)
-
         # Risk Limits
         self._max_daily_loss_spin.setValue(float(self._config.risk_limits.max_daily_loss))
         self._max_positions_spin.setValue(self._config.risk_limits.max_open_positions)
@@ -939,9 +931,6 @@ class KIControllerWidget(QWidget):
         # Modus
         modes = [ControllerMode.OFF, ControllerMode.ALERT, ControllerMode.AUTONOMOUS]
         self._config.mode = modes[self._mode_combo.currentIndex()]
-
-        # Paper Trading
-        self._config.paper_trading_mode = self._paper_check.isChecked()
 
         # Risk Limits
         self._config.risk_limits.max_daily_loss = Decimal(str(self._max_daily_loss_spin.value()))
