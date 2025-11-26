@@ -8,7 +8,7 @@ Läuft autonom und kommuniziert über Signals mit dem Haupt-Thread.
 import time
 import uuid
 from datetime import datetime, timedelta
-from typing import Optional, Dict, Any, List, Callable
+from typing import Optional, Dict, Any, List, Callable, Tuple
 from decimal import Decimal
 from threading import Event
 
@@ -34,6 +34,17 @@ from .decision import (
     LevelOptimizer, LevelCandidate, OptimizationResult, OptimizationConstraints,
     OptimizationStrategy, create_candidate_from_score,
     PricePredictor, PredictionContext, PredictionTimeframe, DirectionBias,
+)
+
+# Risk Management Module
+from .risk import (
+    RiskManager, RiskSnapshot, RiskLevel, RiskAction,
+    Watchdog, WatchdogStatus, HealthCheckResult,
+)
+
+# Execution Module
+from .execution import (
+    ExecutionManager, CommandType, CommandStatus, ExecutionPriority,
 )
 
 # Timezone support
@@ -170,6 +181,65 @@ class KIControllerThread(QThread):
 
         # Predictor für Preis-Vorhersagen
         self._price_predictor = PricePredictor()
+
+        # ==================== RISK & EXECUTION MODULE ====================
+        # Risk Manager für Limit-Überwachung
+        self._risk_manager = RiskManager(
+            max_daily_loss=self.config.risk_limits.max_daily_loss,
+            max_total_exposure=self.config.risk_limits.max_exposure_per_symbol * 5,
+            max_symbol_exposure=self.config.risk_limits.max_exposure_per_symbol,
+            max_positions=self.config.risk_limits.max_open_positions,
+            max_active_levels=self.config.risk_limits.max_active_levels,
+            soft_limit_ratio=self.config.risk_limits.soft_limit_threshold,
+            black_swan_threshold=self.config.risk_limits.sudden_drop_threshold,
+        )
+
+        # Callbacks für Risk Manager
+        self._risk_manager.set_on_warning(self._on_risk_warning)
+        self._risk_manager.set_on_limit_breach(self._on_risk_breach)
+        self._risk_manager.set_on_emergency(self._on_risk_emergency)
+
+        # Watchdog für Fail-Safe
+        self._watchdog = Watchdog(
+            heartbeat_interval_sec=self.config.watchdog_heartbeat_sec,
+            heartbeat_timeout_sec=self.config.watchdog_timeout_sec,
+            health_check_interval_sec=60,
+            max_recovery_attempts=3,
+        )
+        self._watchdog.set_on_emergency(self._on_watchdog_emergency)
+
+        # Execution Manager für Befehlsausführung
+        self._execution_manager = ExecutionManager(
+            max_queue_size=100,
+            default_timeout_sec=30,
+            default_max_retries=3,
+        )
+
+        # Execution Handlers registrieren
+        self._setup_execution_handlers()
+
+    def _setup_execution_handlers(self):
+        """Registriert Handler für Execution Manager"""
+        self._execution_manager.register_handler(
+            CommandType.ACTIVATE_LEVEL,
+            self._handle_activate_level
+        )
+        self._execution_manager.register_handler(
+            CommandType.DEACTIVATE_LEVEL,
+            self._handle_deactivate_level
+        )
+        self._execution_manager.register_handler(
+            CommandType.STOP_TRADE,
+            self._handle_stop_trade
+        )
+        self._execution_manager.register_handler(
+            CommandType.CLOSE_POSITION,
+            self._handle_close_position
+        )
+        self._execution_manager.register_handler(
+            CommandType.EMERGENCY_STOP,
+            self._handle_emergency_stop
+        )
 
     # ==================== THREAD LIFECYCLE ====================
 
@@ -1161,3 +1231,109 @@ class KIControllerThread(QThread):
             self.config = new_config
             self.config.save()
         self._log("Konfiguration aktualisiert", "INFO")
+
+    # ==================== RISK CALLBACKS ====================
+
+    def _on_risk_warning(self, event):
+        """Callback bei Risiko-Warnung"""
+        self._log(f"Risiko-Warnung: {event.message}", "WARNING")
+        self.soft_limit_warning.emit(event.limit_type.value if event.limit_type else "UNKNOWN", event.current_value)
+
+    def _on_risk_breach(self, event):
+        """Callback bei Limit-Verletzung"""
+        self._log(f"Limit-Verletzung: {event.message}", "ERROR")
+        self.hard_limit_reached.emit(event.limit_type.value if event.limit_type else "UNKNOWN")
+
+    def _on_risk_emergency(self, reason: str):
+        """Callback bei Risk Emergency"""
+        self._trigger_emergency_stop(f"Risk Manager: {reason}")
+
+    def _on_watchdog_emergency(self, reason: str):
+        """Callback bei Watchdog Emergency"""
+        self._trigger_emergency_stop(f"Watchdog: {reason}")
+
+    # ==================== EXECUTION HANDLERS ====================
+
+    def _handle_activate_level(self, payload: Dict) -> Tuple[bool, str]:
+        """Handler für Level-Aktivierung"""
+        try:
+            level_id = payload.get('level_id', '')
+            if not level_id:
+                return False, "Keine Level-ID"
+
+            # Signal an Trading-Bot senden
+            self.request_activate_level.emit(payload)
+            return True, f"Level {level_id} aktiviert"
+
+        except Exception as e:
+            return False, str(e)
+
+    def _handle_deactivate_level(self, payload: Dict) -> Tuple[bool, str]:
+        """Handler für Level-Deaktivierung"""
+        try:
+            level_id = payload.get('level_id', '')
+            if not level_id:
+                return False, "Keine Level-ID"
+
+            self.request_deactivate_level.emit(level_id)
+            return True, f"Level {level_id} deaktiviert"
+
+        except Exception as e:
+            return False, str(e)
+
+    def _handle_stop_trade(self, payload: Dict) -> Tuple[bool, str]:
+        """Handler für Trade-Stop"""
+        try:
+            level_id = payload.get('level_id', '')
+            reason = payload.get('reason', 'Unbekannt')
+
+            self.request_stop_trade.emit(level_id)
+            return True, f"Trade {level_id} gestoppt: {reason}"
+
+        except Exception as e:
+            return False, str(e)
+
+    def _handle_close_position(self, payload: Dict) -> Tuple[bool, str]:
+        """Handler für Positions-Schließung"""
+        try:
+            symbol = payload.get('symbol', '')
+            quantity = payload.get('quantity', 0)
+
+            self.request_close_position.emit(symbol, quantity)
+            return True, f"Position {symbol} ({quantity}) geschlossen"
+
+        except Exception as e:
+            return False, str(e)
+
+    def _handle_emergency_stop(self, payload: Dict) -> Tuple[bool, str]:
+        """Handler für Emergency Stop"""
+        try:
+            reason = payload.get('reason', 'Emergency Stop')
+
+            self._trigger_emergency_stop(reason)
+            return True, f"Emergency Stop ausgelöst: {reason}"
+
+        except Exception as e:
+            return False, str(e)
+
+    # ==================== RISK & EXECUTION ACCESS ====================
+
+    def get_risk_snapshot(self) -> Optional[RiskSnapshot]:
+        """Gibt aktuellen Risk-Snapshot zurück"""
+        return self._risk_manager.get_latest_snapshot()
+
+    def get_risk_level(self) -> RiskLevel:
+        """Gibt aktuelles Risiko-Level zurück"""
+        return self._risk_manager.get_current_level()
+
+    def get_watchdog_status(self) -> WatchdogStatus:
+        """Gibt Watchdog-Status zurück"""
+        return self._watchdog.get_status()
+
+    def get_execution_stats(self):
+        """Gibt Execution-Statistiken zurück"""
+        return self._execution_manager.get_stats()
+
+    def is_risk_emergency(self) -> bool:
+        """Prüft ob Risk-Emergency aktiv"""
+        return self._risk_manager.is_emergency()

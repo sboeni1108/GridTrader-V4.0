@@ -19,6 +19,16 @@ from .controller_thread import KIControllerThread
 from .controller_api import ControllerAPI, TradingBotAPIAdapter
 from .level_pool import LevelPool, PoolLevel, LevelPoolStatus
 
+# Testing Module
+from .testing import (
+    PaperTrader, PaperPosition, PaperTrade, PaperPortfolio,
+    PerformanceTracker, PerformanceMetrics, TradeRecord, DecisionRecord,
+)
+
+# Risk & Execution Module
+from .risk import RiskManager, RiskLevel, Watchdog, WatchdogStatus
+from .execution import ExecutionManager, CommandType, ExecutionPriority
+
 __all__ = [
     # Config
     'KIControllerConfig',
@@ -39,6 +49,24 @@ __all__ = [
     'LevelPool',
     'PoolLevel',
     'LevelPoolStatus',
+    # Testing
+    'PaperTrader',
+    'PaperPosition',
+    'PaperTrade',
+    'PaperPortfolio',
+    'PerformanceTracker',
+    'PerformanceMetrics',
+    'TradeRecord',
+    'DecisionRecord',
+    # Risk
+    'RiskManager',
+    'RiskLevel',
+    'Watchdog',
+    'WatchdogStatus',
+    # Execution
+    'ExecutionManager',
+    'CommandType',
+    'ExecutionPriority',
 ]
 
 __version__ = '1.0.0'

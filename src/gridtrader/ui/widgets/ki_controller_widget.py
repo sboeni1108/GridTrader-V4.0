@@ -30,12 +30,22 @@ try:
     from gridtrader.ki_controller import (
         KIControllerThread, KIControllerConfig, ControllerMode,
         KIControllerState, ControllerStatus, LevelPool,
-        TradingBotAPIAdapter, RiskLimits
+        TradingBotAPIAdapter, RiskLimits,
+        PaperTrader, PerformanceTracker
     )
     KI_CONTROLLER_AVAILABLE = True
 except ImportError as e:
     print(f"KI-Controller Import Fehler: {e}")
     KI_CONTROLLER_AVAILABLE = False
+
+# Import neue UI Widgets
+try:
+    from gridtrader.ui.widgets.decision_visualizer import DecisionVisualizerWidget
+    from gridtrader.ui.widgets.statistics_widget import StatisticsWidget
+    ADVANCED_WIDGETS_AVAILABLE = True
+except ImportError as e:
+    print(f"Advanced Widgets Import Fehler: {e}")
+    ADVANCED_WIDGETS_AVAILABLE = False
 
 # Styles
 try:
@@ -81,11 +91,16 @@ class KIControllerWidget(QWidget):
         self._level_pool: Optional[LevelPool] = None
         self._api_adapter: Optional[TradingBotAPIAdapter] = None
 
+        # Paper Trading & Performance Tracking
+        self._paper_trader: Optional[PaperTrader] = None
+        self._performance_tracker: Optional[PerformanceTracker] = None
+
         # UI State
         self._pending_alerts: Dict[str, dict] = {}
 
         self._init_ui()
         self._load_config()
+        self._init_testing_components()
 
         # Update Timer für Status
         self._update_timer = QTimer()
@@ -109,6 +124,18 @@ class KIControllerWidget(QWidget):
         self._tabs.addTab(self._create_dashboard_tab(), "Dashboard")
         self._tabs.addTab(self._create_config_tab(), "Konfiguration")
         self._tabs.addTab(self._create_log_tab(), "Log")
+
+        # Erweiterte Tabs (wenn verfügbar)
+        if ADVANCED_WIDGETS_AVAILABLE:
+            self._decision_viz = DecisionVisualizerWidget()
+            self._tabs.addTab(self._decision_viz, "Visualisierung")
+
+            self._statistics_widget = StatisticsWidget()
+            self._tabs.addTab(self._statistics_widget, "Statistiken")
+        else:
+            self._decision_viz = None
+            self._statistics_widget = None
+
         splitter.addWidget(self._tabs)
 
         # Alert-Bereich (unten)
@@ -779,6 +806,92 @@ class KIControllerWidget(QWidget):
             self._config = KIControllerConfig()
             self._update_ui_from_config()
             self._log("Konfiguration zurückgesetzt", "INFO")
+
+    def _init_testing_components(self):
+        """Initialisiert Paper Trading und Performance Tracking"""
+        if not KI_CONTROLLER_AVAILABLE:
+            return
+
+        # Paper Trader
+        self._paper_trader = PaperTrader(
+            starting_capital=100000.0,
+            commission_per_share=0.005,
+            slippage_pct=0.01,
+            realistic_fills=True,
+        )
+
+        # Performance Tracker
+        self._performance_tracker = PerformanceTracker(max_history=10000)
+        self._performance_tracker.set_starting_equity(100000.0)
+
+        # Callbacks verbinden
+        self._paper_trader.set_on_trade_closed(self._on_paper_trade_closed)
+
+        self._log("Testing-Komponenten initialisiert", "INFO")
+
+    def _on_paper_trade_closed(self, trade):
+        """Callback wenn ein Paper Trade geschlossen wird"""
+        if self._performance_tracker:
+            self._performance_tracker.record_trade_exit(
+                trade_id=trade.trade_id,
+                exit_price=trade.exit_price,
+                reason="Paper Trade",
+                commission=trade.commission_total,
+            )
+
+        # Statistics Widget aktualisieren
+        if self._statistics_widget:
+            self._update_statistics_display()
+
+    def _update_statistics_display(self):
+        """Aktualisiert das Statistics Widget"""
+        if not self._statistics_widget or not self._performance_tracker:
+            return
+
+        try:
+            # Metriken
+            metrics = self._performance_tracker.calculate_metrics()
+            self._statistics_widget.update_metrics(metrics.to_dict())
+
+            # Trades
+            trades = self._performance_tracker.get_trades(100)
+            self._statistics_widget.update_trades([t.to_dict() for t in trades])
+
+            # Entscheidungen
+            decisions = self._performance_tracker.get_decisions(100)
+            self._statistics_widget.update_decisions([d.to_dict() for d in decisions])
+
+            # Equity Curve
+            equity_data = self._performance_tracker.get_equity_curve()
+            self._statistics_widget.update_equity_curve(
+                equity_data,
+                self._performance_tracker._starting_equity
+            )
+
+            # Analysen
+            self._statistics_widget.update_time_analysis(
+                self._performance_tracker.get_trade_analysis_by_time()
+            )
+            self._statistics_widget.update_level_analysis(
+                self._performance_tracker.get_trade_analysis_by_level()
+            )
+            self._statistics_widget.update_decision_quality(
+                self._performance_tracker.get_decision_analysis()
+            )
+        except Exception as e:
+            pass  # Stille Fehler bei Updates
+
+    def _update_decision_visualizer(self, levels: list, predictions: dict, context: dict):
+        """Aktualisiert den Decision Visualizer"""
+        if not self._decision_viz:
+            return
+
+        try:
+            self._decision_viz.update_level_scores(levels)
+            self._decision_viz.update_predictions(predictions)
+            self._decision_viz.update_market_context(context)
+        except Exception as e:
+            pass
 
     def _update_ui_from_config(self):
         """Aktualisiert UI aus Config"""
