@@ -55,6 +55,14 @@ except ImportError:
     import pytz
     NY_TZ = pytz.timezone("America/New_York")
 
+# Historical Data Manager für zentrale Datenverwaltung
+try:
+    from gridtrader.infrastructure.data import get_data_manager, HistoricalDataManager
+    DATA_MANAGER_AVAILABLE = True
+except ImportError:
+    DATA_MANAGER_AVAILABLE = False
+    print("WARNUNG: HistoricalDataManager nicht verfügbar für KI-Controller")
+
 
 class KIControllerSignals:
     """Container für alle Signals des Controllers"""
@@ -320,6 +328,156 @@ class KIControllerThread(QThread):
 
         self._log(f"Modus: {self.config.mode.value}", "INFO")
         self._log(f"Paper Trading: {'Ja' if self.config.paper_trading_mode else 'NEIN - LIVE!'}", "INFO")
+
+        # Historische Daten für Pattern-Matching laden
+        self._load_historical_data_for_analysis()
+
+    def _load_historical_data_for_analysis(self):
+        """
+        Lädt historische Daten vom DataManager für Pattern-Matching.
+
+        Verwendet:
+        1. Primär: Bereits geladene Backtesting-Daten
+        2. Sekundär: Erweiterte Historie vom IBKR Service (falls konfiguriert)
+        """
+        if not DATA_MANAGER_AVAILABLE:
+            self._log("DataManager nicht verfügbar - Pattern-Matching eingeschränkt", "WARNING")
+            return
+
+        try:
+            manager = get_data_manager()
+
+            # Symbole aus Level-Pool ermitteln
+            symbols = set()
+            for level_data in self._level_pool.values():
+                if 'symbol' in level_data:
+                    symbols.add(level_data['symbol'])
+
+            if not symbols:
+                self._log("Keine Symbole im Level-Pool - überspringe Datenladung", "INFO")
+                return
+
+            self._log(f"Lade historische Daten für {len(symbols)} Symbol(e)...", "INFO")
+
+            for symbol in symbols:
+                self._initialize_symbol_data(manager, symbol)
+
+        except Exception as e:
+            self._log(f"Fehler beim Laden historischer Daten: {e}", "ERROR")
+
+    def _initialize_symbol_data(self, manager: 'HistoricalDataManager', symbol: str):
+        """
+        Initialisiert Daten für ein einzelnes Symbol.
+
+        Args:
+            manager: Der HistoricalDataManager
+            symbol: Aktien-Symbol
+        """
+        # Prüfen ob bereits Backtesting-Daten vorhanden
+        if manager.has_data(symbol):
+            cache_info = manager.get_cache_info(symbol)
+            row_count = cache_info.get('row_count', 0) if cache_info else 0
+            source = cache_info.get('source', 'UNKNOWN') if cache_info else 'UNKNOWN'
+            self._log(f"✓ {symbol}: {row_count} Datenpunkte aus {source} vorhanden", "INFO")
+
+            # Daten in Analyse-Module laden
+            data = manager.get_data(symbol)
+            if data is not None and not data.empty:
+                self._feed_historical_data_to_analyzers(symbol, data)
+        else:
+            self._log(f"⚠ {symbol}: Keine Backtesting-Daten - lade von IBKR...", "INFO")
+
+            # Erweiterte Historie laden (default: 30 Tage für Pattern-Matching)
+            extended_days = getattr(self.config, 'pattern_history_days', 30)
+            data = manager.get_extended_history(symbol, days=extended_days)
+
+            if data is not None and not data.empty:
+                self._log(f"✓ {symbol}: {len(data)} Datenpunkte von IBKR geladen", "SUCCESS")
+                self._feed_historical_data_to_analyzers(symbol, data)
+            else:
+                self._log(f"✗ {symbol}: Keine historischen Daten verfügbar", "WARNING")
+
+    def _feed_historical_data_to_analyzers(self, symbol: str, data):
+        """
+        Füttert die Analyse-Module mit historischen Daten.
+
+        Args:
+            symbol: Aktien-Symbol
+            data: DataFrame mit OHLCV-Daten
+        """
+        import pandas as pd
+
+        if data is None or data.empty:
+            return
+
+        candle_count = 0
+
+        try:
+            # Durch alle Kerzen iterieren und den Analyzern zuführen
+            for timestamp, row in data.iterrows():
+                candle = Candle(
+                    timestamp=timestamp.to_pydatetime() if hasattr(timestamp, 'to_pydatetime') else timestamp,
+                    open=float(row['open']),
+                    high=float(row['high']),
+                    low=float(row['low']),
+                    close=float(row['close']),
+                    volume=int(row.get('volume', 0)),
+                )
+
+                # Zur Volatilitäts-Analyse hinzufügen
+                self._volatility_monitor.add_candle(symbol, candle)
+
+                # Volumen-Analyse aktualisieren
+                price_change = candle.body_pct
+                self._volume_analyzer.add_volume(
+                    symbol=symbol,
+                    volume=candle.volume,
+                    price_change_pct=price_change,
+                    timestamp=candle.timestamp,
+                )
+
+                candle_count += 1
+
+            self._log(f"Pattern-Matching für {symbol}: {candle_count} Kerzen geladen", "INFO")
+
+        except Exception as e:
+            self._log(f"Fehler beim Laden der Kerzen für {symbol}: {e}", "ERROR")
+
+    def load_extended_history(self, symbol: str, days: int = 365) -> bool:
+        """
+        Lädt erweiterte Historie für tieferes Pattern-Matching.
+
+        Diese Methode kann manuell aufgerufen werden, um mehr
+        historische Daten für bessere Muster-Erkennung zu laden.
+
+        Args:
+            symbol: Aktien-Symbol
+            days: Anzahl Tage (max 365)
+
+        Returns:
+            True wenn erfolgreich geladen
+        """
+        if not DATA_MANAGER_AVAILABLE:
+            self._log("DataManager nicht verfügbar", "ERROR")
+            return False
+
+        try:
+            manager = get_data_manager()
+            self._log(f"Lade erweiterte Historie für {symbol} ({days} Tage)...", "INFO")
+
+            data = manager.get_extended_history(symbol, days=days, force_reload=True)
+
+            if data is not None and not data.empty:
+                self._feed_historical_data_to_analyzers(symbol, data)
+                self._log(f"✓ {symbol}: {len(data)} Datenpunkte für {days} Tage geladen", "SUCCESS")
+                return True
+            else:
+                self._log(f"✗ {symbol}: Konnte keine erweiterte Historie laden", "WARNING")
+                return False
+
+        except Exception as e:
+            self._log(f"Fehler beim Laden erweiterter Historie: {e}", "ERROR")
+            return False
 
     def _cleanup(self):
         """Aufräumen beim Beenden"""

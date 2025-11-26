@@ -26,6 +26,14 @@ import pickle
 from pathlib import Path
 # NOTE: IBKRService wird dynamisch importiert in DataFetcher.fetch_historical_data()
 
+# Historical Data Manager für zentrale Datenverwaltung
+try:
+    from gridtrader.infrastructure.data import get_data_manager
+    DATA_MANAGER_AVAILABLE = True
+except ImportError:
+    DATA_MANAGER_AVAILABLE = False
+    print("WARNUNG: HistoricalDataManager nicht verfügbar")
+
 
 class BacktestWorker(QThread):
     """Worker Thread für Backtest-Berechnungen"""
@@ -1461,6 +1469,16 @@ class AdvancedBacktestWidget(QWidget):
         self.update_status(f"Daten für {self.symbol_edit.text()} erfolgreich geladen")
         self.log(f"Daten geladen: {len(data)} Kerzen")
 
+        # Daten im zentralen DataManager registrieren (für KI-Controller)
+        if DATA_MANAGER_AVAILABLE:
+            try:
+                symbol = self.symbol_edit.text().upper()
+                manager = get_data_manager()
+                manager.register_backtest_data(symbol, data, timeframe="1min")
+                self.log(f"✅ Daten im DataManager registriert für KI-Controller")
+            except Exception as e:
+                self.log(f"⚠️ DataManager Registrierung fehlgeschlagen: {e}")
+
     def on_fetch_finished(self):
         """Callback wenn DataFetcher Thread beendet"""
         self.fetch_btn.setEnabled(True)
@@ -1537,6 +1555,15 @@ class AdvancedBacktestWidget(QWidget):
             self.data_status_label.setText(f"✅ {actual_length} Datenpunkte aus Cache ({cache_age_hours:.1f}h alt)")
             self.update_status(f"✅ Cache geladen: {actual_length} Datenpunkte")
             self.log(f"Cache geladen: {newest_cache.name} ({actual_length} Kerzen)")
+
+            # Daten im zentralen DataManager registrieren (für KI-Controller)
+            if DATA_MANAGER_AVAILABLE:
+                try:
+                    manager = get_data_manager()
+                    manager.register_backtest_data(symbol, self.historical_data, timeframe="1min")
+                    self.log(f"✅ Cache-Daten im DataManager registriert für KI-Controller")
+                except Exception as e:
+                    self.log(f"⚠️ DataManager Registrierung fehlgeschlagen: {e}")
 
         except Exception as e:
             error_msg = f"Fehler beim Laden des Cache: {str(e)}"
