@@ -9,7 +9,7 @@
 
 **Datum:** 2025-11-26
 **Aktives Feature:** KI-Trading-Controller
-**Aktuelle Phase:** Phase 2 abgeschlossen, bereit für Phase 3
+**Aktuelle Phase:** Phase 3 abgeschlossen, bereit für Phase 4
 
 ---
 
@@ -28,7 +28,7 @@ Ein adaptiver, KI-gesteuerter Trading-Controller, der:
 |-------|-------------|--------|-------|
 | Phase 1 | Foundation (Architektur, Level-Pool, UI) | ✅ Abgeschlossen | 2025-11-26 |
 | Phase 2 | Analyse-Engine (ATR, Volatilität, Pattern) | ✅ Abgeschlossen | 2025-11-26 |
-| Phase 3 | Entscheidungs-Engine (Scoring, Optimierung) | ⏳ Ausstehend | - |
+| Phase 3 | Entscheidungs-Engine (Scoring, Optimierung) | ✅ Abgeschlossen | 2025-11-26 |
 | Phase 4 | Risk Management & Execution | ⏳ Ausstehend | - |
 | Phase 5 | Testing & Polish | ⏳ Ausstehend | - |
 
@@ -107,25 +107,43 @@ src/gridtrader/ki_controller/analysis/
 
 ---
 
-## Phase 3: Entscheidungs-Engine ⏳
+## Phase 3: Entscheidungs-Engine ✅
 
-### Geplante Dateien
+### Implementierte Dateien
 
 ```
 src/gridtrader/ki_controller/decision/
-├── __init__.py
-├── level_scorer.py          ⏳ Multi-Faktor Level-Bewertung
-├── optimizer.py             ⏳ Optimale Level-Kombination
-└── predictor.py             ⏳ Vorausdenken basierend auf Mustern
+├── __init__.py              ✅ Modul-Exports
+├── level_scorer.py          ✅ Multi-Faktor Level-Bewertung (8 Kategorien)
+├── optimizer.py             ✅ Optimale Level-Kombination (4 Strategien)
+└── predictor.py             ✅ Preis-Vorhersage mit Multi-Signal-Kombination
 ```
 
-### Geplante Funktionalität
+### Implementierte Funktionalität
 
-- [ ] Erweitertes Level-Scoring (Abstand, Volatilität, Historie, Risk/Reward)
-- [ ] Optimale Kombination berechnen (Long/Short Balance)
-- [ ] Kontinuierliche Anpassung (Re-Evaluation alle X Sekunden)
-- [ ] Vorausdenken ("Wenn Preis X erreicht, dann...")
-- [ ] Kommissions-Impact in Entscheidungen
+- [x] **LevelScorer** - Multi-Faktor Bewertung mit 8 Score-Kategorien:
+  - Price Proximity (Nähe zum aktuellen Preis)
+  - Volatility Fit (Level-Größe vs. ATR)
+  - Profit Potential (nach Kommissionen)
+  - Risk/Reward Ratio
+  - Pattern Match (historische Muster)
+  - Time Suitability (Tageszeit-Eignung)
+  - Volume Context (Volumen-Analyse)
+  - Trend Alignment (Trend-Übereinstimmung)
+- [x] **LevelOptimizer** - Optimale Level-Kombination mit:
+  - 4 Strategien: GREEDY, BALANCED, CONSERVATIVE, AGGRESSIVE
+  - Long/Short Balance Constraints
+  - Overlap-Vermeidung (Min. Abstand zwischen Levels)
+  - Diversifikation über Preiszonen
+  - Max Levels pro Symbol/Side
+- [x] **PricePredictor** - Preis-Vorhersagen für 4 Zeiträume:
+  - 5min, 15min, 30min, 1h Vorhersagen
+  - Signal-Kombination: Pattern, Momentum, Volume, Time
+  - Konfidenz-Berechnung basierend auf Signal-Übereinstimmung
+  - DirectionBias: STRONG_UP, UP, NEUTRAL, DOWN, STRONG_DOWN
+- [x] Integration in controller_thread.py
+- [x] MarketContext und PredictionContext für Daten-Übergabe
+- [x] Kommissions-Impact in Profit-Berechnung
 
 ---
 
@@ -204,6 +222,14 @@ src/gridtrader/ki_controller/execution/
 ---
 
 ## Changelog
+
+### 2025-11-26 (Phase 3)
+- **Phase 3 abgeschlossen: Entscheidungs-Engine**
+- LevelScorer: Multi-Faktor Bewertung mit 8 Score-Kategorien
+- LevelOptimizer: 4 Optimierungs-Strategien, Constraint-basierte Auswahl
+- PricePredictor: Preis-Vorhersagen für 4 Zeiträume (5min bis 1h)
+- Integration in controller_thread.py mit MarketContext und PredictionContext
+- _calculate_optimal_levels nutzt jetzt LevelScorer + Optimizer
 
 ### 2025-11-26 (Phase 2)
 - **Phase 2 abgeschlossen: Analyse-Engine**
