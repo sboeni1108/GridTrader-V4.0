@@ -288,10 +288,11 @@ src/gridtrader/
 | Phase | Status | Bemerkungen |
 |-------|--------|-------------|
 | Phase 1 | ✅ Abgeschlossen | Foundation - Grundstruktur, Level-Pool, UI |
-| Phase 2 | ⏳ Ausstehend | Analyse-Engine |
-| Phase 3 | ⏳ Ausstehend | Entscheidungs-Engine |
-| Phase 4 | ⏳ Ausstehend | Risk & Execution |
-| Phase 5 | ⏳ Ausstehend | Testing & Polish |
+| Phase 2 | ✅ Abgeschlossen | Analyse-Engine - ATR, Volatilität, Pattern |
+| Phase 3 | ✅ Abgeschlossen | Entscheidungs-Engine - Scoring, Optimierung |
+| Phase 4 | ✅ Abgeschlossen | Risk & Execution - Limits, Watchdog |
+| Phase 5 | ✅ Abgeschlossen | Testing & Polish - Paper Trading, Stats |
+| Integration | ✅ Abgeschlossen | IBKR, Orphan Positions, Bugfixes |
 
 ### Phase 1 Ergebnisse
 
@@ -331,6 +332,37 @@ Folgende Komponenten wurden implementiert:
    - Konfigurationspanel
    - Log-Ansicht
    - Alert-Bestätigung
+
+---
+
+## Waisen-Positionen (Orphan Positions)
+
+Ein wichtiges Feature für das Trade-Management:
+
+### Entstehung
+Wenn ein **aktives Level** (mit offener Position) vom KI-Controller deaktiviert wird:
+- Die Position wird NICHT automatisch geschlossen
+- Stattdessen wird sie als "Waisen-Position" geführt
+- Der KI-Controller überwacht diese Positionen separat
+
+### Überwachung
+- Alle Waisen-Positionen werden kontinuierlich auf Gewinn geprüft
+- Konfigurierbare Mindest-Gewinn-Schwelle: **3 Cent pro Aktie** (default)
+- Bei Erreichen der Schwelle: Position wird automatisch geschlossen
+
+### Order-Typ
+- Waisen-Positionen werden mit **LIMIT Orders** geschlossen (nicht MARKET)
+- Der Limit-Preis ist der aktuelle Marktpreis zum Zeitpunkt der Schließung
+- Dies gewährleistet bessere Ausführungspreise
+
+### Anwendungsfall
+```
+Situation: KI-Controller hat Level L3 aktiviert, 100 Aktien @ $5.10 gekauft
+Marktanalyse: Volatilität sinkt, Controller entscheidet L3 zu deaktivieren
+→ Position wird Waise (100 Aktien @ $5.10)
+Später: Preis steigt auf $5.15 (+5 Cent Gewinn pro Aktie)
+→ KI-Controller schließt automatisch mit LIMIT SELL @ $5.15
+```
 
 ---
 
