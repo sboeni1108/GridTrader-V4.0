@@ -1329,6 +1329,7 @@ class KIControllerWidget(QWidget):
         timestamp = datetime.now().strftime("%H:%M:%S")
 
         color_map = {
+            'DEBUG': '#9cdcfe',   # Hellblau für Debug
             'INFO': '#d4d4d4',
             'SUCCESS': '#4ec9b0',
             'WARNING': '#dcdcaa',
@@ -1339,6 +1340,14 @@ class KIControllerWidget(QWidget):
         html = f'<span style="color: #858585;">[{timestamp}]</span> '
         html += f'<span style="color: {color};">[{level}]</span> '
         html += f'<span style="color: #d4d4d4;">{message}</span><br>'
+
+        # Log-Limit: Wenn zu viele Zeilen, älteste entfernen
+        doc = self._log_text.document()
+        if doc.blockCount() > 500:
+            cursor = self._log_text.textCursor()
+            cursor.movePosition(cursor.Start)
+            cursor.movePosition(cursor.Down, cursor.KeepAnchor, 100)  # 100 älteste Zeilen löschen
+            cursor.removeSelectedText()
 
         self._log_text.insertHtml(html)
         self._log_text.ensureCursorVisible()

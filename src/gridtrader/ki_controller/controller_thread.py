@@ -890,6 +890,7 @@ class KIControllerThread(QThread):
 
         ms = self.state.market_states.get(symbol)
         if not ms or ms.current_price <= 0:
+            self._log(f"{symbol}: Keine MarketState oder Preis=0", "WARNING")
             return
 
         # Aktuelle aktive Levels für dieses Symbol
@@ -899,6 +900,7 @@ class KIControllerThread(QThread):
         available_levels = self._get_available_levels_for_symbol(symbol)
 
         if not available_levels:
+            self._log(f"{symbol}: Keine verfügbaren Levels im Pool", "WARNING")
             return  # Keine Levels verfügbar
 
         # Optimale Kombination berechnen (vereinfacht - wird in Phase 3 ausgebaut)
@@ -965,12 +967,30 @@ class KIControllerThread(QThread):
                 market_context.pattern_prediction = pred_5min.direction.value
                 market_context.pattern_confidence = pred_5min.confidence
 
+        # 2b. Preise für Levels berechnen (aus Prozentwerten)
+        # Levels im Pool haben nur entry_pct/exit_pct, keine absoluten Preise
+        for level in available_levels:
+            entry_pct = level.get('entry_pct', 0) or 0
+            exit_pct = level.get('exit_pct', 0) or 0
+
+            # Preise aus Prozentwerten berechnen
+            # entry_pct ist relativ zum Basis-Preis (negativer Wert = unter aktuellem Preis)
+            level['entry_price'] = current_price * (1 + entry_pct / 100)
+            level['exit_price'] = current_price * (1 + exit_pct / 100)
+
         # 3. Alle Levels bewerten mit LevelScorer
-        if self.config.log_analysis_details:
+        self._log(
+            f"MarketContext: price={market_context.current_price:.2f}, "
+            f"atr_5={market_context.atr_5:.4f}, regime={market_context.volatility_regime}",
+            "INFO"
+        )
+        # Debug: erstes Level Preise
+        if available_levels:
+            first = available_levels[0]
             self._log(
-                f"MarketContext: price={market_context.current_price:.2f}, "
-                f"atr_5={market_context.atr_5:.4f}, regime={market_context.volatility_regime}",
-                "DEBUG"
+                f"Level {first.get('level_id', '')[-10:]}: "
+                f"entry=${first.get('entry_price', 0):.2f}, exit=${first.get('exit_price', 0):.2f}",
+                "INFO"
             )
         level_scores = self._level_scorer.score_levels(available_levels, market_context)
 
@@ -978,12 +998,12 @@ class KIControllerThread(QThread):
         scores_for_ui = []
 
         # Debug: Ersten Score loggen
-        if level_scores and self.config.log_analysis_details:
+        if level_scores:
             first_ls = level_scores[0]
             self._log(
-                f"Score Debug: {first_ls.level_id[:8]} total={first_ls.total_score:.2f}, "
-                f"breakdowns={len(first_ls.breakdowns)}, rejection={first_ls.rejection_reason}",
-                "DEBUG"
+                f"Score: {first_ls.level_id[:8]} total={first_ls.total_score:.1f}, "
+                f"breakdowns={len(first_ls.breakdowns)}, rejection='{first_ls.rejection_reason}'",
+                "INFO"
             )
 
         for ls in level_scores:
