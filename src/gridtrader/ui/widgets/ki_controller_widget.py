@@ -1342,11 +1342,12 @@ class KIControllerWidget(QWidget):
         html += f'<span style="color: #d4d4d4;">{message}</span><br>'
 
         # Log-Limit: Wenn zu viele Zeilen, älteste entfernen
+        # Erhöhtes Limit für bessere Log-Verfolgung
         doc = self._log_text.document()
-        if doc.blockCount() > 500:
+        if doc.blockCount() > 2000:
             cursor = self._log_text.textCursor()
             cursor.movePosition(cursor.Start)
-            cursor.movePosition(cursor.Down, cursor.KeepAnchor, 100)  # 100 älteste Zeilen löschen
+            cursor.movePosition(cursor.Down, cursor.KeepAnchor, 500)  # 500 älteste Zeilen löschen
             cursor.removeSelectedText()
 
         self._log_text.insertHtml(html)

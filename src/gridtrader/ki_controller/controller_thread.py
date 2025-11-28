@@ -912,6 +912,18 @@ class KIControllerThread(QThread):
         levels_to_activate = self._identify_levels_to_activate(current_levels, optimal_levels)
         levels_to_deactivate = self._identify_levels_to_deactivate(current_levels, optimal_levels)
 
+        # Log Aktivierungsentscheidung
+        if levels_to_activate:
+            self._log(
+                f"{symbol}: {len(levels_to_activate)} Level(s) zur Aktivierung bereit",
+                "INFO"
+            )
+        if levels_to_deactivate:
+            self._log(
+                f"{symbol}: {len(levels_to_deactivate)} Level(s) zur Deaktivierung bereit",
+                "INFO"
+            )
+
         # Entscheidungen ausführen
         for level_data in levels_to_activate:
             self._execute_activate_level(level_data, ms)
@@ -1123,14 +1135,13 @@ class KIControllerThread(QThread):
                     optimal.append(level)
                     break
 
-        # Log wenn interessant
-        if self.config.log_analysis_details and optimization_result.selected_levels:
-            self._log(
-                f"{symbol}: Optimierung - {optimization_result.total_count} Levels, "
-                f"Score: {optimization_result.total_score:.0f}, "
-                f"L/S: {optimization_result.long_count}/{optimization_result.short_count}",
-                "INFO"
-            )
+        # Log immer, um Aktivierung zu verstehen
+        self._log(
+            f"Optimizer: {len(candidates)} Kandidaten → "
+            f"{optimization_result.total_count} ausgewählt "
+            f"(L:{optimization_result.long_count}/S:{optimization_result.short_count})",
+            "INFO"
+        )
 
         return optimal
 
