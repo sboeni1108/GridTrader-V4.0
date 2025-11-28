@@ -950,16 +950,25 @@ class KIControllerWidget(QWidget):
             self._log("API-Adapter nicht verfügbar für Aktivierung", "ERROR")
             return
 
-        level_id = level_data.get('level_id', '')[:12]
         scenario = level_data.get('scenario_name', 'Unknown')
         side = level_data.get('side', 'LONG')
         level_num = level_data.get('level_num', 0)
+        symbol = level_data.get('symbol', '')
+        entry_pct = level_data.get('entry_pct', 0)
+        exit_pct = level_data.get('exit_pct', 0)
+
+        # Debug: Zeige was aktiviert wird
+        self._log(
+            f"Aktiviere: {scenario} L{level_num} {side} ({symbol}) "
+            f"Entry:{entry_pct:+.2f}% Exit:{exit_pct:+.2f}%",
+            "INFO"
+        )
 
         success = self._api_adapter.activate_level(level_data)
         if success:
-            self._log(f"Level aktiviert im Bot: {scenario} L{level_num} {side}", "SUCCESS")
+            self._log(f"✓ Level im Bot aktiviert: {scenario} L{level_num} {side}", "SUCCESS")
         else:
-            self._log(f"Level-Aktivierung fehlgeschlagen: {level_id}", "ERROR")
+            self._log(f"✗ Level-Aktivierung fehlgeschlagen: {scenario} L{level_num}", "ERROR")
 
     def _on_request_deactivate_level(self, level_id: str):
         """Handler für Level-Deaktivierung vom Controller"""

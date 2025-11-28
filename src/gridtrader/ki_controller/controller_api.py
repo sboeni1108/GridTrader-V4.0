@@ -504,51 +504,67 @@ class TradingBotAPIAdapter(ControllerAPI):
         level_data: Dict[str, Any],
         base_price: Optional[Decimal] = None
     ) -> bool:
-        """Aktiviert ein Level"""
+        """
+        Aktiviert ein Level im Trading-Bot.
+
+        Verwendet den aktuellen Marktpreis als Basis.
+        """
         try:
-            # Konvertiere level_data in das Format des Trading-Bots
             symbol = level_data.get('symbol', '')
-            entry_pct = level_data.get('entry_pct', 0)
-            exit_pct = level_data.get('exit_pct', 0)
             shares = level_data.get('shares', 100)
             side = level_data.get('side', 'LONG')
 
-            # Basis-Preis ermitteln
+            # Basis-Preis ermitteln (aktueller Marktpreis)
             if base_price is None:
                 market_data = self.get_market_data(symbol)
-                if market_data:
-                    base_price = Decimal(str(market_data['price']))
+                if market_data and market_data.get('price'):
+                    base_price = float(market_data['price'])
                 else:
+                    print(f"Kein Marktpreis für {symbol} verfügbar")
                     return False
+            else:
+                base_price = float(base_price)
 
-            # Entry/Exit Preise berechnen
-            entry_price = float(base_price) * (1 + entry_pct / 100)
-            exit_price = float(base_price) * (1 + exit_pct / 100)
-
-            # Level-Daten für Trading-Bot vorbereiten
+            # Level-Daten im Format das _add_to_waiting_table erwartet
             level_for_bot = {
-                'symbol': symbol,
-                'side': side,
-                'level_num': level_data.get('level_num', 0),
-                'entry_price': entry_price,
-                'exit_price': exit_price,
-                'shares': shares,
                 'scenario_name': level_data.get('scenario_name', 'KI-Controller'),
-                'activated_by': 'KI-Controller',
+                'level_num': level_data.get('level_num', 0),
+                'entry_pct': level_data.get('entry_pct', 0),
+                'exit_pct': level_data.get('exit_pct', 0),
+                'type': side,  # Trading-Bot verwendet 'type' statt 'side'
             }
 
-            # Zur Waiting-Liste des Trading-Bots hinzufügen
-            if hasattr(self._bot, 'waiting_levels'):
-                self._bot.waiting_levels.append(level_for_bot)
+            # Config wie vom ActivationDialog erwartet
+            config = {
+                'symbol': symbol,
+                'shares': shares,
+                'use_market_price': False,  # Wir haben bereits einen Preis
+                'fixed_price': base_price,
+            }
 
-                # UI aktualisieren (wenn Methode existiert)
-                if hasattr(self._bot, '_update_waiting_table'):
-                    self._bot._update_waiting_table()
+            # Verwende die Trading-Bot Methode wenn verfügbar
+            if hasattr(self._bot, '_add_to_waiting_table'):
+                self._bot._add_to_waiting_table(level_for_bot, config, base_price)
 
+                # Market Data Subscription sicherstellen
+                if hasattr(self._bot, '_ibkr_service') and self._bot._ibkr_service:
+                    if hasattr(self._bot._ibkr_service, 'subscribe_market_data'):
+                        self._bot._ibkr_service.subscribe_market_data([symbol])
+
+                # Tabelle sortieren
+                if hasattr(self._bot, '_sort_waiting_table'):
+                    self._bot._sort_waiting_table()
+
+                print(f"Level aktiviert: {level_for_bot['scenario_name']} L{level_for_bot['level_num']} {side}")
                 return True
+            else:
+                print("Trading-Bot hat keine _add_to_waiting_table Methode")
+                return False
 
         except Exception as e:
             print(f"Fehler bei Level-Aktivierung: {e}")
+            import traceback
+            traceback.print_exc()
 
         return False
 
