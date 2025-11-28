@@ -63,8 +63,11 @@ class LevelCandidate:
     @property
     def price_zone(self) -> int:
         """Gibt die Preiszone zurück (für Diversifikation)"""
-        # Teile Preisbereich in 10 Zonen ein
-        return int(self.entry_price // (self.entry_price * 0.01))  # 1% Zonen
+        # Teile Preisbereich in $1 Zonen ein
+        # z.B. $15.30 -> Zone 15, $15.80 -> Zone 15, $16.10 -> Zone 16
+        if self.entry_price <= 0:
+            return 0
+        return int(self.entry_price)
 
 
 @dataclass
@@ -364,13 +367,17 @@ class LevelOptimizer:
                 return f"Zu nah an bestehendem Level ({distance:.2f}%)"
 
         # 7. Diversifikation (Preiszonen)
-        zone = candidate.price_zone
-        zone_count = sum(1 for l in result.selected_levels if l.price_zone == zone)
-        total_count = len(result.selected_levels) + 1
-        zone_ratio = (zone_count + 1) / total_count * 100
+        # Nur prüfen wenn genügend Levels für sinnvolle Diversifikation vorhanden
+        # Bei max 30% pro Zone brauchen wir mindestens 4 Levels
+        min_levels_for_diversification = int(100 / self.constraints.max_exposure_per_price_zone_pct)
+        if len(result.selected_levels) >= min_levels_for_diversification:
+            zone = candidate.price_zone
+            zone_count = sum(1 for l in result.selected_levels if l.price_zone == zone)
+            total_count = len(result.selected_levels) + 1
+            zone_ratio = (zone_count + 1) / total_count * 100
 
-        if zone_ratio > self.constraints.max_exposure_per_price_zone_pct:
-            return f"Zu viel in Preiszone {zone} ({zone_ratio:.0f}%)"
+            if zone_ratio > self.constraints.max_exposure_per_price_zone_pct:
+                return f"Zu viel in Preiszone {zone} ({zone_ratio:.0f}%)"
 
         return None
 
