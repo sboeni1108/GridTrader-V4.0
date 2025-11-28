@@ -961,14 +961,14 @@ class KIControllerWidget(QWidget):
         self._log(
             f"Aktiviere: {scenario} L{level_num} {side} ({symbol}) "
             f"Entry:{entry_pct:+.2f}% Exit:{exit_pct:+.2f}%",
-            "INFO"
+            "DEBUG"
         )
 
-        success = self._api_adapter.activate_level(level_data)
+        success, message = self._api_adapter.activate_level(level_data)
         if success:
-            self._log(f"✓ Level im Bot aktiviert: {scenario} L{level_num} {side}", "SUCCESS")
+            self._log(f"✓ Im Bot: {message}", "SUCCESS")
         else:
-            self._log(f"✗ Level-Aktivierung fehlgeschlagen: {scenario} L{level_num}", "ERROR")
+            self._log(f"✗ Aktivierung fehlgeschlagen: {message}", "ERROR")
 
     def _on_request_deactivate_level(self, level_id: str):
         """Handler für Level-Deaktivierung vom Controller"""
