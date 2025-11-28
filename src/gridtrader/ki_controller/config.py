@@ -261,6 +261,48 @@ class AlertConfig:
 
 
 @dataclass
+class HistoricalDataConfig:
+    """Konfiguration für historische Daten (für KI-Analyse)"""
+
+    # Wie viele Tage historische Daten laden?
+    history_days: int = 30  # 30 Tage für Pattern-Matching
+
+    # Kerzen-Größe für Analyse
+    # Optionen: "1min", "2min", "5min", "15min", "30min", "1hour"
+    candle_size: str = "5min"  # 5-Minuten Kerzen als guter Kompromiss
+
+    # Automatisch beim Start laden?
+    auto_load_on_start: bool = True
+
+    # Nachladen wenn weniger als X Kerzen vorhanden?
+    min_candles_required: int = 100
+
+    # Cache-TTL in Minuten (wie lange Daten gültig sind)
+    cache_ttl_minutes: int = 60
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Konvertiert zu Dictionary"""
+        return {
+            'history_days': self.history_days,
+            'candle_size': self.candle_size,
+            'auto_load_on_start': self.auto_load_on_start,
+            'min_candles_required': self.min_candles_required,
+            'cache_ttl_minutes': self.cache_ttl_minutes,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'HistoricalDataConfig':
+        """Erstellt Instanz aus Dictionary"""
+        return cls(
+            history_days=data.get('history_days', 30),
+            candle_size=data.get('candle_size', '5min'),
+            auto_load_on_start=data.get('auto_load_on_start', True),
+            min_candles_required=data.get('min_candles_required', 100),
+            cache_ttl_minutes=data.get('cache_ttl_minutes', 60),
+        )
+
+
+@dataclass
 class KIControllerConfig:
     """
     Haupt-Konfigurationsklasse für den KI-Controller
@@ -278,6 +320,7 @@ class KIControllerConfig:
     analysis: AnalysisConfig = field(default_factory=AnalysisConfig)
     decision: DecisionConfig = field(default_factory=DecisionConfig)
     alerts: AlertConfig = field(default_factory=AlertConfig)
+    historical_data: HistoricalDataConfig = field(default_factory=HistoricalDataConfig)
 
     # Watchdog
     watchdog_heartbeat_sec: int = 5  # Heartbeat alle 5 Sekunden
@@ -296,6 +339,7 @@ class KIControllerConfig:
             'analysis': self.analysis.to_dict(),
             'decision': self.decision.to_dict(),
             'alerts': self.alerts.to_dict(),
+            'historical_data': self.historical_data.to_dict(),
             'watchdog_heartbeat_sec': self.watchdog_heartbeat_sec,
             'watchdog_timeout_sec': self.watchdog_timeout_sec,
             'log_all_decisions': self.log_all_decisions,
@@ -312,6 +356,7 @@ class KIControllerConfig:
             analysis=AnalysisConfig.from_dict(data.get('analysis', {})),
             decision=DecisionConfig.from_dict(data.get('decision', {})),
             alerts=AlertConfig.from_dict(data.get('alerts', {})),
+            historical_data=HistoricalDataConfig.from_dict(data.get('historical_data', {})),
             watchdog_heartbeat_sec=data.get('watchdog_heartbeat_sec', 5),
             watchdog_timeout_sec=data.get('watchdog_timeout_sec', 30),
             log_all_decisions=data.get('log_all_decisions', True),

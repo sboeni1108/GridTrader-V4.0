@@ -419,6 +419,62 @@ class KIControllerWidget(QWidget):
 
         layout.addWidget(alert_group)
 
+        # ==================== HISTORICAL DATA SETTINGS ====================
+        data_group = QGroupBox("Historische Daten (für KI-Analyse)")
+        apply_groupbox_style(data_group)
+        data_layout = QVBoxLayout(data_group)
+
+        # Form für Einstellungen
+        data_form = QFormLayout()
+
+        self._history_days_spin = QSpinBox()
+        self._history_days_spin.setRange(5, 90)
+        self._history_days_spin.setValue(30)
+        self._history_days_spin.setSuffix(" Tage")
+        self._history_days_spin.setToolTip("Wie viele Tage historische Daten für Pattern-Matching laden")
+        data_form.addRow("Historie:", self._history_days_spin)
+
+        self._candle_size_combo = QComboBox()
+        self._candle_size_combo.addItems(["1min", "2min", "5min", "15min", "30min", "1hour"])
+        self._candle_size_combo.setCurrentText("5min")
+        self._candle_size_combo.setToolTip("Kerzen-Größe für Analyse (5min empfohlen)")
+        data_form.addRow("Kerzen-Größe:", self._candle_size_combo)
+
+        self._auto_load_check = QCheckBox()
+        self._auto_load_check.setChecked(True)
+        self._auto_load_check.setToolTip("Automatisch historische Daten beim Controller-Start laden")
+        data_form.addRow("Auto-Load beim Start:", self._auto_load_check)
+
+        data_layout.addLayout(data_form)
+
+        # Status-Anzeige
+        status_frame = QFrame()
+        status_frame.setFrameStyle(QFrame.StyledPanel)
+        status_frame.setStyleSheet("background-color: #f5f5f5; border-radius: 5px; padding: 5px;")
+        status_layout = QVBoxLayout(status_frame)
+
+        self._data_status_label = QLabel("Daten-Status: Nicht geladen")
+        self._data_status_label.setWordWrap(True)
+        status_layout.addWidget(self._data_status_label)
+
+        # Buttons für Daten-Aktionen
+        data_btn_layout = QHBoxLayout()
+
+        self._load_data_btn = QPushButton("Von IBKR laden")
+        self._load_data_btn.setToolTip("Historische Daten von IBKR herunterladen")
+        self._load_data_btn.clicked.connect(self._load_historical_data)
+        data_btn_layout.addWidget(self._load_data_btn)
+
+        self._clear_cache_btn = QPushButton("Cache leeren")
+        self._clear_cache_btn.setToolTip("Gecachte Daten löschen")
+        self._clear_cache_btn.clicked.connect(self._clear_data_cache)
+        data_btn_layout.addWidget(self._clear_cache_btn)
+
+        status_layout.addLayout(data_btn_layout)
+        data_layout.addWidget(status_frame)
+
+        layout.addWidget(data_group)
+
         # ==================== BUTTONS ====================
         btn_layout = QHBoxLayout()
         btn_layout.addStretch()
@@ -1026,6 +1082,19 @@ class KIControllerWidget(QWidget):
         self._confirm_close_check.setChecked(self._config.alerts.confirm_close_position)
         self._alert_timeout_spin.setValue(self._config.alerts.confirmation_timeout)
 
+        # Historical Data Settings
+        if hasattr(self, '_history_days_spin') and hasattr(self._config, 'historical_data'):
+            self._history_days_spin.setValue(self._config.historical_data.history_days)
+        if hasattr(self, '_candle_size_combo') and hasattr(self._config, 'historical_data'):
+            index = self._candle_size_combo.findText(self._config.historical_data.candle_size)
+            if index >= 0:
+                self._candle_size_combo.setCurrentIndex(index)
+        if hasattr(self, '_auto_load_check') and hasattr(self._config, 'historical_data'):
+            self._auto_load_check.setChecked(self._config.historical_data.auto_load_on_start)
+
+        # Daten-Status aktualisieren
+        self._update_data_status()
+
     def _update_config_from_ui(self):
         """Aktualisiert Config aus UI"""
         if not self._config:
@@ -1056,6 +1125,105 @@ class KIControllerWidget(QWidget):
         self._config.alerts.confirm_stop_trade = self._confirm_stop_check.isChecked()
         self._config.alerts.confirm_close_position = self._confirm_close_check.isChecked()
         self._config.alerts.confirmation_timeout = self._alert_timeout_spin.value()
+
+        # Historical Data Settings
+        if hasattr(self, '_history_days_spin'):
+            self._config.historical_data.history_days = self._history_days_spin.value()
+        if hasattr(self, '_candle_size_combo'):
+            self._config.historical_data.candle_size = self._candle_size_combo.currentText()
+        if hasattr(self, '_auto_load_check'):
+            self._config.historical_data.auto_load_on_start = self._auto_load_check.isChecked()
+
+    def _load_historical_data(self):
+        """Lädt historische Daten von IBKR"""
+        try:
+            from gridtrader.infrastructure.data import get_data_manager
+        except ImportError:
+            self._log("DataManager nicht verfügbar", "ERROR")
+            return
+
+        # Symbole aus Level-Pool ermitteln
+        symbols = set()
+        if self._level_pool:
+            for level in self._level_pool.get_all_levels():
+                if hasattr(level, 'symbol') and level.symbol:
+                    symbols.add(level.symbol)
+
+        if not symbols:
+            self._log("Keine Symbole im Level-Pool - bitte zuerst Szenarien laden", "WARNING")
+            return
+
+        days = self._history_days_spin.value() if hasattr(self, '_history_days_spin') else 30
+        timeframe = self._candle_size_combo.currentText() if hasattr(self, '_candle_size_combo') else "5min"
+
+        self._log(f"Lade historische Daten für {len(symbols)} Symbol(e)...", "INFO")
+        self._load_data_btn.setEnabled(False)
+        self._load_data_btn.setText("Lade...")
+
+        manager = get_data_manager()
+
+        for symbol in symbols:
+            try:
+                self._log(f"Lade {symbol}: {days} Tage, {timeframe} Kerzen...", "INFO")
+                data = manager.get_extended_history(symbol, days=days, timeframe=timeframe, force_reload=True)
+
+                if data is not None and not data.empty:
+                    self._log(f"✓ {symbol}: {len(data)} Datenpunkte geladen", "SUCCESS")
+                else:
+                    self._log(f"⚠ {symbol}: Keine Daten erhalten", "WARNING")
+
+            except Exception as e:
+                self._log(f"✗ {symbol}: Fehler - {e}", "ERROR")
+
+        self._load_data_btn.setEnabled(True)
+        self._load_data_btn.setText("Von IBKR laden")
+        self._update_data_status()
+
+    def _clear_data_cache(self):
+        """Leert den Daten-Cache"""
+        try:
+            from gridtrader.infrastructure.data import get_data_manager
+            manager = get_data_manager()
+            manager.clear_cache()
+            self._log("Daten-Cache geleert", "INFO")
+            self._update_data_status()
+        except Exception as e:
+            self._log(f"Fehler beim Leeren des Cache: {e}", "ERROR")
+
+    def _update_data_status(self):
+        """Aktualisiert die Daten-Status Anzeige"""
+        if not hasattr(self, '_data_status_label'):
+            return
+
+        try:
+            from gridtrader.infrastructure.data import get_data_manager
+            manager = get_data_manager()
+
+            # Symbole aus Level-Pool
+            symbols = set()
+            if self._level_pool:
+                for level in self._level_pool.get_all_levels():
+                    if hasattr(level, 'symbol') and level.symbol:
+                        symbols.add(level.symbol)
+
+            if not symbols:
+                self._data_status_label.setText("Daten-Status: Keine Symbole im Level-Pool")
+                return
+
+            status_parts = []
+            for symbol in sorted(symbols):
+                cache_info = manager.get_cache_info(symbol)
+                if cache_info:
+                    row_count = cache_info.get('row_count', 0)
+                    source = cache_info.get('source', 'UNKNOWN')
+                    status_parts.append(f"• {symbol}: {row_count} Kerzen ({source})")
+                else:
+                    status_parts.append(f"• {symbol}: Nicht geladen")
+
+            self._data_status_label.setText("Daten-Status:\n" + "\n".join(status_parts))
+
+        except Exception as e:
+            self._data_status_label.setText(f"Daten-Status: Fehler - {e}")
 
     # ==================== UI UPDATES ====================
 

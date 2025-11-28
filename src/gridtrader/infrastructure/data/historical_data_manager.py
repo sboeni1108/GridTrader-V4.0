@@ -164,6 +164,24 @@ class HistoricalDataManager:
             # Sortieren
             merged_data = merged_data.sort_index()
 
+            # Timezone entfernen (alle Daten als timezone-naive behandeln)
+            if merged_data.index.tz is not None:
+                merged_data.index = merged_data.index.tz_localize(None)
+
+            # Start/End Daten extrahieren (als timezone-naive)
+            start_dt = merged_data.index.min()
+            end_dt = merged_data.index.max()
+
+            # Konvertiere zu Python datetime (timezone-naive)
+            if hasattr(start_dt, 'to_pydatetime'):
+                start_dt = start_dt.to_pydatetime()
+                if hasattr(start_dt, 'tzinfo') and start_dt.tzinfo is not None:
+                    start_dt = start_dt.replace(tzinfo=None)
+            if hasattr(end_dt, 'to_pydatetime'):
+                end_dt = end_dt.to_pydatetime()
+                if hasattr(end_dt, 'tzinfo') and end_dt.tzinfo is not None:
+                    end_dt = end_dt.replace(tzinfo=None)
+
             # Cache-Eintrag erstellen
             entry = DataCacheEntry(
                 symbol=symbol.upper(),
@@ -171,8 +189,8 @@ class HistoricalDataManager:
                 data=merged_data,
                 loaded_at=datetime.now(),
                 source=source,
-                start_date=merged_data.index.min().to_pydatetime(),
-                end_date=merged_data.index.max().to_pydatetime(),
+                start_date=start_dt,
+                end_date=end_dt,
                 row_count=len(merged_data),
             )
 
