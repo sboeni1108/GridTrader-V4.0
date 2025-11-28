@@ -1462,6 +1462,13 @@ class KIControllerThread(QThread):
     def _check_trading_hours(self):
         """Prüft ob innerhalb der Handelszeiten"""
         try:
+            # Extended Hours Mode: Handelszeiten komplett ignorieren
+            if self.config.trading_hours.ignore_trading_hours:
+                if not self.state.is_market_hours:
+                    self.state.is_market_hours = True
+                    self._log("Extended Hours Modus aktiv - Handelszeiten ignoriert", "INFO")
+                return
+
             ny_now = datetime.now(NY_TZ)
             current_time = ny_now.time()
 
@@ -1469,9 +1476,10 @@ class KIControllerThread(QThread):
                 self.config.trading_hours.market_open <= current_time <= self.config.trading_hours.market_close
             )
 
-            # Wochenende?
+            # Wochenende? (kann mit ignore_weekends überschrieben werden)
             if ny_now.weekday() >= 5:  # Samstag oder Sonntag
-                is_market_hours = False
+                if not self.config.trading_hours.ignore_weekends:
+                    is_market_hours = False
 
             if is_market_hours != self.state.is_market_hours:
                 self.state.is_market_hours = is_market_hours

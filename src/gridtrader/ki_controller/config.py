@@ -94,6 +94,10 @@ class TradingHoursConfig:
     medium_volatility_end: time = field(default_factory=lambda: time(14, 0))
     # Nach 14:00 = low volatility bis market close
 
+    # Extended Hours / Handelszeiten ignorieren
+    ignore_trading_hours: bool = False  # Wenn True: Controller läuft 24/7
+    ignore_weekends: bool = False       # Wenn True: Controller läuft auch am Wochenende
+
     def to_dict(self) -> Dict[str, Any]:
         """Konvertiert zu Dictionary"""
         return {
@@ -102,6 +106,8 @@ class TradingHoursConfig:
             'high_volatility_start': self.high_volatility_start.isoformat(),
             'high_volatility_end': self.high_volatility_end.isoformat(),
             'medium_volatility_end': self.medium_volatility_end.isoformat(),
+            'ignore_trading_hours': self.ignore_trading_hours,
+            'ignore_weekends': self.ignore_weekends,
         }
 
     @classmethod
@@ -113,6 +119,8 @@ class TradingHoursConfig:
             high_volatility_start=time.fromisoformat(data.get('high_volatility_start', '09:30:00')),
             high_volatility_end=time.fromisoformat(data.get('high_volatility_end', '10:30:00')),
             medium_volatility_end=time.fromisoformat(data.get('medium_volatility_end', '14:00:00')),
+            ignore_trading_hours=data.get('ignore_trading_hours', False),
+            ignore_weekends=data.get('ignore_weekends', False),
         )
 
 

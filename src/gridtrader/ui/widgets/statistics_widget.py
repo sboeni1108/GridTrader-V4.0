@@ -846,3 +846,37 @@ class StatisticsWidget(QWidget):
                     "Export fehlgeschlagen",
                     f"Fehler beim Export:\n{str(e)}"
                 )
+
+    @Slot(dict)
+    def on_market_update(self, data: dict):
+        """
+        Handler für Marktdaten-Updates.
+
+        Aktualisiert relevante Statistik-Anzeigen basierend auf neuen Marktdaten.
+
+        Args:
+            data: Dictionary mit Marktdaten (symbol, price, volume_ratio, etc.)
+        """
+        # Speichere letzte Marktdaten für Referenz
+        if not hasattr(self, '_last_market_data'):
+            self._last_market_data = {}
+
+        symbol = data.get('symbol', '')
+        if symbol:
+            self._last_market_data[symbol] = {
+                'price': data.get('price', 0),
+                'volume_ratio': data.get('volume_ratio', 1.0),
+                'atr': data.get('atr_5', 0),
+                'regime': data.get('volatility_regime', 'UNKNOWN'),
+                'updated_at': datetime.now()
+            }
+
+        # Aktualisiere unrealized P&L basierend auf aktuellem Preis
+        # (falls aktive Positionen vorhanden)
+        self._update_unrealized_pnl()
+
+    def _update_unrealized_pnl(self):
+        """Aktualisiert die unrealized P&L Anzeige basierend auf aktuellen Marktdaten."""
+        # Diese Methode kann erweitert werden, um unrealized P&L zu berechnen
+        # basierend auf _last_market_data und aktiven Positionen
+        pass

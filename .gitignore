@@ -36,3 +36,5 @@ test_*.py
 # OS
 Thumbs.db
 .DS_Store
+dist/
+build/

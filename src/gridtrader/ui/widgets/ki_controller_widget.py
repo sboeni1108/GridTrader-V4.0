@@ -419,6 +419,25 @@ class KIControllerWidget(QWidget):
 
         layout.addWidget(alert_group)
 
+        # ==================== TRADING HOURS ====================
+        hours_group = QGroupBox("Handelszeiten")
+        apply_groupbox_style(hours_group)
+        hours_layout = QFormLayout(hours_group)
+
+        self._ignore_trading_hours_check = QCheckBox()
+        self._ignore_trading_hours_check.setToolTip(
+            "Wenn aktiviert, läuft der Controller auch außerhalb der NY-Handelszeiten (9:30-16:00)"
+        )
+        hours_layout.addRow("Handelszeiten ignorieren:", self._ignore_trading_hours_check)
+
+        self._ignore_weekends_check = QCheckBox()
+        self._ignore_weekends_check.setToolTip(
+            "Wenn aktiviert, läuft der Controller auch am Wochenende"
+        )
+        hours_layout.addRow("Wochenenden ignorieren:", self._ignore_weekends_check)
+
+        layout.addWidget(hours_group)
+
         # ==================== BUTTONS ====================
         btn_layout = QHBoxLayout()
         btn_layout.addStretch()
@@ -714,14 +733,53 @@ class KIControllerWidget(QWidget):
         price = analysis.get('price', 0)
         regime = analysis.get('volatility_regime', 'UNKNOWN')
         atr = analysis.get('atr_5', 0)
+        volume_ratio = analysis.get('volume_ratio', 0)
+        trading_phase = analysis.get('trading_phase', 'UNKNOWN')
 
+        # Basis-Felder aktualisieren
         self._current_price_label.setText(f"${price:.2f}")
         self._atr_label.setText(f"{atr:.3f}%")
+
+        # Volumen-Label aktualisieren
+        if volume_ratio > 0:
+            self._volume_label.setText(f"{volume_ratio:.1f}x")
+            # Farbcodierung für Volumen
+            if volume_ratio >= 2.5:
+                self._volume_label.setStyleSheet("color: #f44336; font-weight: bold;")  # Rot für Spike
+            elif volume_ratio >= 1.5:
+                self._volume_label.setStyleSheet("color: #ff9800; font-weight: bold;")  # Orange für hoch
+            else:
+                self._volume_label.setStyleSheet("color: #4CAF50;")  # Grün für normal
+        else:
+            self._volume_label.setText("-")
+            self._volume_label.setStyleSheet("")
+
+        # Tageszeit-Regime Label aktualisieren
+        phase_names = {
+            'PRE_MARKET': 'Pre-Market',
+            'OPEN': 'Eröffnung',
+            'MORNING': 'Vormittag',
+            'MIDDAY': 'Mittag',
+            'AFTERNOON': 'Nachmittag',
+            'CLOSE': 'Schluss',
+            'AFTER_HOURS': 'After-Hours',
+            'CLOSED': 'Geschlossen',
+            'UNKNOWN': '-'
+        }
+        self._time_regime_label.setText(phase_names.get(trading_phase, trading_phase))
 
         # Volatilitäts-Card aktualisieren
         value_label = self._volatility_card.findChild(QLabel, "value")
         if value_label:
             value_label.setText(regime)
+
+        # Decision Visualizer aktualisieren (wenn vorhanden)
+        if self._decision_viz:
+            self._decision_viz.update_market_data(analysis)
+
+        # Statistics Widget aktualisieren (wenn vorhanden)
+        if self._statistics_widget:
+            self._statistics_widget.on_market_update(analysis)
 
     @Slot(str, str)
     def _on_volatility_changed(self, symbol: str, regime: str):
@@ -920,6 +978,10 @@ class KIControllerWidget(QWidget):
         self._confirm_close_check.setChecked(self._config.alerts.confirm_close_position)
         self._alert_timeout_spin.setValue(self._config.alerts.confirmation_timeout)
 
+        # Trading Hours
+        self._ignore_trading_hours_check.setChecked(self._config.trading_hours.ignore_trading_hours)
+        self._ignore_weekends_check.setChecked(self._config.trading_hours.ignore_weekends)
+
     def _update_config_from_ui(self):
         """Aktualisiert Config aus UI"""
         if not self._config:
@@ -950,6 +1012,10 @@ class KIControllerWidget(QWidget):
         self._config.alerts.confirm_stop_trade = self._confirm_stop_check.isChecked()
         self._config.alerts.confirm_close_position = self._confirm_close_check.isChecked()
         self._config.alerts.confirmation_timeout = self._alert_timeout_spin.value()
+
+        # Trading Hours
+        self._config.trading_hours.ignore_trading_hours = self._ignore_trading_hours_check.isChecked()
+        self._config.trading_hours.ignore_weekends = self._ignore_weekends_check.isChecked()
 
     # ==================== UI UPDATES ====================
 
