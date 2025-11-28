@@ -978,6 +978,13 @@ class KIControllerThread(QThread):
             elif ls.total_score < 0.3:
                 status = 'EXCLUDED'
 
+            # Score-Breakdown aus breakdowns Liste extrahieren
+            breakdown_dict = {}
+            for bd in ls.breakdowns:
+                # category.value ist z.B. "PRICE_PROXIMITY" -> zu "price_proximity" konvertieren
+                key = bd.category.value.lower()
+                breakdown_dict[key] = bd.weighted_score
+
             scores_for_ui.append({
                 'level_id': ls.level_id,
                 'symbol': ls.symbol,
@@ -989,14 +996,14 @@ class KIControllerThread(QThread):
                 'status': status,
                 # score_breakdown für LevelScoreTable Kompatibilität
                 'score_breakdown': {
-                    'price_proximity': ls.category_scores.get('price_proximity', 0),
-                    'volatility_fit': ls.category_scores.get('volatility_fit', 0),
-                    'profit_potential': ls.category_scores.get('profit_potential', 0),
-                    'risk_reward': ls.category_scores.get('risk_reward', 0),
-                    'pattern_match': ls.category_scores.get('pattern_match', 0),
-                    'time_suitability': ls.category_scores.get('time_suitability', 0),
-                    'volume_context': ls.category_scores.get('volume_context', 0),
-                    'trend_alignment': ls.category_scores.get('trend_alignment', 0),
+                    'price_proximity': breakdown_dict.get('price_proximity', 0),
+                    'volatility_fit': breakdown_dict.get('volatility_fit', 0),
+                    'profit_potential': breakdown_dict.get('profit_potential', 0),
+                    'risk_reward': breakdown_dict.get('risk_reward', 0),
+                    'pattern_match': breakdown_dict.get('pattern_match', 0),
+                    'time_suitability': breakdown_dict.get('time_suitability', 0),
+                    'volume_context': breakdown_dict.get('volume_context', 0),
+                    'trend_alignment': breakdown_dict.get('trend_alignment', 0),
                 }
             })
         if scores_for_ui:
