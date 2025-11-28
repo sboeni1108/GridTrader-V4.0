@@ -966,24 +966,23 @@ class KIControllerThread(QThread):
                 market_context.pattern_confidence = pred_5min.confidence
 
         # 3. Alle Levels bewerten mit LevelScorer
-        if self.config.log_analysis_details:
-            self._log(
-                f"MarketContext: price={market_context.current_price:.2f}, "
-                f"atr_5={market_context.atr_5:.4f}, regime={market_context.volatility_regime}",
-                "DEBUG"
-            )
+        self._log(
+            f"MarketContext: price={market_context.current_price:.2f}, "
+            f"atr_5={market_context.atr_5:.4f}, regime={market_context.volatility_regime}",
+            "INFO"
+        )
         level_scores = self._level_scorer.score_levels(available_levels, market_context)
 
         # Level-Scores an UI senden
         scores_for_ui = []
 
         # Debug: Ersten Score loggen
-        if level_scores and self.config.log_analysis_details:
+        if level_scores:
             first_ls = level_scores[0]
             self._log(
-                f"Score Debug: {first_ls.level_id[:8]} total={first_ls.total_score:.2f}, "
-                f"breakdowns={len(first_ls.breakdowns)}, rejection={first_ls.rejection_reason}",
-                "DEBUG"
+                f"Score: {first_ls.level_id[:8]} total={first_ls.total_score:.1f}, "
+                f"breakdowns={len(first_ls.breakdowns)}, rejection='{first_ls.rejection_reason}'",
+                "INFO"
             )
 
         for ls in level_scores:
