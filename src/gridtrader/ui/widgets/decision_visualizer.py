@@ -532,22 +532,71 @@ class DecisionVisualizerWidget(QWidget):
         regime = data.get('volatility_regime', 'UNKNOWN')
         atr = data.get('atr_5', 0)
         volume_ratio = data.get('volume_ratio', 1.0)
+        trading_phase = data.get('trading_phase', 'UNKNOWN')
         pattern = data.get('pattern', 'UNKNOWN')
         pattern_confidence = data.get('pattern_confidence', 0)
 
-        # Markt-Kontext aktualisieren (wenn vorhanden)
-        if hasattr(self, '_context_display') and self._context_display:
-            self._context_display.update_context({
-                'symbol': symbol,
-                'price': price,
-                'volatility_regime': regime,
-                'atr': atr,
-                'volume_ratio': volume_ratio,
-                'pattern': pattern,
-                'pattern_confidence': pattern_confidence,
-            })
+        # Konvertiere Daten zu Scores für die Score-Bars
+        # Volatilität: HIGH -> 0.8, MEDIUM -> 0.5, LOW -> 0.2
+        volatility_scores = {'EXTREME': 1.0, 'HIGH': 0.8, 'MEDIUM': 0.5, 'LOW': 0.2, 'UNKNOWN': 0.5}
+        vol_score = volatility_scores.get(regime, 0.5)
 
-        # Preis in Prediction Display aktualisieren (wenn vorhanden)
-        if hasattr(self, '_prediction_display') and self._prediction_display:
-            # Aktualisiere Preis-Basis für Vorhersagen
-            pass  # Die Prediction wird vom Controller separat aktualisiert
+        # Volumen: ratio normalisiert (1.0 = normal = 0.5)
+        vol_ratio_score = min(1.0, volume_ratio / 2.0) if volume_ratio > 0 else 0.5
+
+        # Tageszeit: MORNING, AFTERNOON = gut (0.7), OPEN, CLOSE = medium (0.5), andere = niedrig (0.3)
+        time_scores = {
+            'MORNING': 0.7, 'AFTERNOON': 0.7,
+            'OPEN': 0.5, 'CLOSE': 0.5, 'MIDDAY': 0.4,
+            'PRE_MARKET': 0.3, 'AFTER_HOURS': 0.2, 'CLOSED': 0.0, 'UNKNOWN': 0.5
+        }
+        time_score = time_scores.get(trading_phase, 0.5)
+
+        # Pattern-Score basierend auf Confidence
+        pattern_score = pattern_confidence if pattern != 'UNKNOWN' else 0.0
+
+        # Risiko-Score (inverser Volatilitäts-Score)
+        risk_score = vol_score  # Höhere Volatilität = höheres Risiko
+
+        # Score-Bars aktualisieren
+        if hasattr(self, '_context_bars') and self._context_bars:
+            if 'volatility' in self._context_bars:
+                self._context_bars['volatility'].set_value(vol_score)
+                self._context_bars['volatility'].set_color(
+                    QColor("#f44336") if vol_score > 0.7 else
+                    QColor("#4CAF50") if vol_score < 0.3 else QColor("#FF9800")
+                )
+            if 'volume' in self._context_bars:
+                self._context_bars['volume'].set_value(vol_ratio_score)
+                self._context_bars['volume'].set_color(
+                    QColor("#f44336") if vol_ratio_score > 0.8 else
+                    QColor("#4CAF50") if vol_ratio_score < 0.3 else QColor("#2196F3")
+                )
+            if 'time_score' in self._context_bars:
+                self._context_bars['time_score'].set_value(time_score)
+                self._context_bars['time_score'].set_color(
+                    QColor("#4CAF50") if time_score > 0.6 else
+                    QColor("#FF9800") if time_score > 0.3 else QColor("#f44336")
+                )
+            if 'pattern' in self._context_bars:
+                self._context_bars['pattern'].set_value(pattern_score)
+                self._context_bars['pattern'].set_color(
+                    QColor("#4CAF50") if pattern_score > 0.6 else QColor("#666")
+                )
+            if 'risk' in self._context_bars:
+                self._context_bars['risk'].set_value(risk_score)
+                self._context_bars['risk'].set_color(
+                    QColor("#f44336") if risk_score > 0.7 else
+                    QColor("#4CAF50") if risk_score < 0.3 else QColor("#FF9800")
+                )
+
+        # Empfehlung aktualisieren
+        if hasattr(self, '_recommendation_label'):
+            rec_parts = []
+            rec_parts.append(f"Symbol: {symbol} @ ${price:.2f}")
+            rec_parts.append(f"Volatilität: {regime}")
+            if pattern != 'UNKNOWN':
+                rec_parts.append(f"Pattern: {pattern} ({pattern_confidence:.0%})")
+            else:
+                rec_parts.append("Pattern: Kein Muster erkannt")
+            self._recommendation_label.setText("\n".join(rec_parts))

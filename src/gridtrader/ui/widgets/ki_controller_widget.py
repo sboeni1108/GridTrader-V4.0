@@ -735,6 +735,8 @@ class KIControllerWidget(QWidget):
         atr = analysis.get('atr_5', 0)
         volume_ratio = analysis.get('volume_ratio', 0)
         trading_phase = analysis.get('trading_phase', 'UNKNOWN')
+        pattern = analysis.get('pattern', 'UNKNOWN')
+        pattern_confidence = analysis.get('pattern_confidence', 0)
 
         # Basis-Felder aktualisieren
         self._current_price_label.setText(f"${price:.2f}")
@@ -773,6 +775,12 @@ class KIControllerWidget(QWidget):
         if value_label:
             value_label.setText(regime)
 
+        # Controller-Empfehlung generieren und anzeigen
+        recommendation = self._generate_recommendation(
+            symbol, price, regime, atr, volume_ratio, trading_phase, pattern, pattern_confidence
+        )
+        self._recommendation_label.setText(recommendation)
+
         # Decision Visualizer aktualisieren (wenn vorhanden)
         if self._decision_viz:
             self._decision_viz.update_market_data(analysis)
@@ -780,6 +788,65 @@ class KIControllerWidget(QWidget):
         # Statistics Widget aktualisieren (wenn vorhanden)
         if self._statistics_widget:
             self._statistics_widget.on_market_update(analysis)
+
+    def _generate_recommendation(
+        self, symbol: str, price: float, regime: str, atr: float,
+        volume_ratio: float, trading_phase: str, pattern: str, pattern_confidence: float
+    ) -> str:
+        """Generiert eine Empfehlung basierend auf den Marktdaten."""
+        recommendations = []
+
+        # Volatilitäts-Empfehlung
+        if regime == 'HIGH':
+            recommendations.append("⚠️ Hohe Volatilität - Vorsicht bei neuen Positionen")
+        elif regime == 'EXTREME':
+            recommendations.append("🚨 Extreme Volatilität - Trading pausieren empfohlen")
+        elif regime == 'LOW':
+            recommendations.append("📉 Niedrige Volatilität - Engere Spreads möglich")
+        else:
+            recommendations.append(f"📊 Normale Marktbedingungen ({regime})")
+
+        # Volumen-Empfehlung
+        if volume_ratio >= 2.5:
+            recommendations.append(f"📈 Volumen-Spike ({volume_ratio:.1f}x) - Mögliche News/Events")
+        elif volume_ratio >= 1.5:
+            recommendations.append(f"📊 Erhöhtes Volumen ({volume_ratio:.1f}x)")
+        elif volume_ratio < 0.5 and volume_ratio > 0:
+            recommendations.append("📉 Niedriges Volumen - Reduzierte Liquidität")
+
+        # Tageszeit-Empfehlung
+        phase_recommendations = {
+            'PRE_MARKET': "🌅 Pre-Market: Reduzierte Liquidität",
+            'OPEN': "🔔 Eröffnung: Hohe Volatilität erwartet",
+            'MORNING': "☀️ Vormittag: Gute Trading-Bedingungen",
+            'MIDDAY': "😴 Mittagspause: Geringere Aktivität",
+            'AFTERNOON': "⏰ Nachmittag: Normale Aktivität",
+            'CLOSE': "🔔 Schlussphase: Erhöhte Volatilität möglich",
+            'AFTER_HOURS': "🌙 After-Hours: Geringe Liquidität",
+            'CLOSED': "🚫 Markt geschlossen",
+        }
+        if trading_phase in phase_recommendations:
+            recommendations.append(phase_recommendations[trading_phase])
+
+        # Pattern-Empfehlung
+        if pattern != 'UNKNOWN' and pattern_confidence > 0.5:
+            pattern_names = {
+                'BREAKOUT_UP': '🚀 Ausbruch nach oben erkannt',
+                'BREAKOUT_DOWN': '📉 Ausbruch nach unten erkannt',
+                'TREND_UP': '📈 Aufwärtstrend',
+                'TREND_DOWN': '📉 Abwärtstrend',
+                'RANGING': '↔️ Seitwärtsbewegung',
+                'REVERSAL_UP': '🔄 Umkehr nach oben möglich',
+                'REVERSAL_DOWN': '🔄 Umkehr nach unten möglich',
+            }
+            if pattern in pattern_names:
+                recommendations.append(f"{pattern_names[pattern]} ({pattern_confidence:.0%})")
+
+        # ATR-Info
+        if atr > 0:
+            recommendations.append(f"📏 ATR: {atr:.2f}% vom Preis")
+
+        return "\n".join(recommendations) if recommendations else "Analysiere Marktdaten..."
 
     @Slot(str, str)
     def _on_volatility_changed(self, symbol: str, regime: str):
