@@ -647,6 +647,12 @@ class KIControllerWidget(QWidget):
         self._controller.soft_limit_warning.connect(self._on_soft_limit_warning)
         self._controller.hard_limit_reached.connect(self._on_hard_limit_reached)
 
+        # Trading-Aktionen mit API verbinden
+        self._controller.request_activate_level.connect(self._on_request_activate_level)
+        self._controller.request_deactivate_level.connect(self._on_request_deactivate_level)
+        self._controller.request_stop_trade.connect(self._on_request_stop_trade)
+        self._controller.request_emergency_stop.connect(self._on_request_emergency_stop)
+
         # API und Level Pool setzen
         if self._api_adapter:
             self._controller.set_trading_bot_api(self._api_adapter)
@@ -934,6 +940,66 @@ class KIControllerWidget(QWidget):
             "Hard Limit erreicht",
             f"Das Limit '{limit_name}' wurde erreicht.\n"
             "Der Controller wird gestoppt."
+        )
+
+    # ==================== TRADING ACTION HANDLERS ====================
+
+    def _on_request_activate_level(self, level_data: dict):
+        """Handler für Level-Aktivierung vom Controller"""
+        if not self._api_adapter:
+            self._log("API-Adapter nicht verfügbar für Aktivierung", "ERROR")
+            return
+
+        level_id = level_data.get('level_id', '')[:12]
+        scenario = level_data.get('scenario_name', 'Unknown')
+        side = level_data.get('side', 'LONG')
+        level_num = level_data.get('level_num', 0)
+
+        success = self._api_adapter.activate_level(level_data)
+        if success:
+            self._log(f"Level aktiviert im Bot: {scenario} L{level_num} {side}", "SUCCESS")
+        else:
+            self._log(f"Level-Aktivierung fehlgeschlagen: {level_id}", "ERROR")
+
+    def _on_request_deactivate_level(self, level_id: str):
+        """Handler für Level-Deaktivierung vom Controller"""
+        if not self._api_adapter:
+            self._log("API-Adapter nicht verfügbar für Deaktivierung", "ERROR")
+            return
+
+        success = self._api_adapter.deactivate_level(level_id)
+        if success:
+            self._log(f"Level deaktiviert: {level_id}", "INFO")
+        else:
+            self._log(f"Level-Deaktivierung fehlgeschlagen: {level_id}", "WARNING")
+
+    def _on_request_stop_trade(self, level_id: str):
+        """Handler für Trade-Stop vom Controller"""
+        if not self._api_adapter:
+            self._log("API-Adapter nicht verfügbar für Stop", "ERROR")
+            return
+
+        success = self._api_adapter.stop_trade(level_id)
+        if success:
+            self._log(f"Trade gestoppt: {level_id}", "INFO")
+        else:
+            self._log(f"Trade-Stop fehlgeschlagen: {level_id}", "WARNING")
+
+    def _on_request_emergency_stop(self):
+        """Handler für Emergency Stop vom Controller"""
+        self._log("EMERGENCY STOP ausgelöst!", "ERROR")
+
+        if self._api_adapter:
+            self._api_adapter.emergency_stop()
+
+        # Controller stoppen
+        self._stop_controller()
+
+        QMessageBox.critical(
+            self,
+            "Emergency Stop",
+            "Der KI-Controller hat einen Emergency Stop ausgelöst.\n"
+            "Alle Aktivitäten wurden gestoppt."
         )
 
     # ==================== ALERT HANDLING ====================

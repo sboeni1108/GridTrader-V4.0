@@ -1009,12 +1009,16 @@ class KIControllerThread(QThread):
         # Level-Scores an UI senden
         scores_for_ui = []
 
+        # Mapping von level_id zu Original-Daten für scenario_name/level_num
+        level_lookup = {lvl.get('level_id'): lvl for lvl in available_levels}
+
         # Debug: Ersten Score loggen
         if level_scores:
             first_ls = level_scores[0]
+            orig = level_lookup.get(first_ls.level_id, {})
             self._log(
-                f"Score: {first_ls.level_id[:8]} total={first_ls.total_score:.1f}, "
-                f"breakdowns={len(first_ls.breakdowns)}, rejection='{first_ls.rejection_reason}'",
+                f"Score: {orig.get('scenario_name', first_ls.level_id[:8])} L{orig.get('level_num', 0)} "
+                f"total={first_ls.total_score:.1f}, breakdowns={len(first_ls.breakdowns)}",
                 "INFO"
             )
 
@@ -1033,8 +1037,13 @@ class KIControllerThread(QThread):
                 key = bd.category.value.lower()
                 breakdown_dict[key] = bd.weighted_score
 
+            # Original-Level für scenario_name und level_num
+            orig_level = level_lookup.get(ls.level_id, {})
+
             scores_for_ui.append({
                 'level_id': ls.level_id,
+                'scenario_name': orig_level.get('scenario_name', ''),
+                'level_num': orig_level.get('level_num', 0),
                 'symbol': ls.symbol,
                 'side': ls.side,
                 'entry_price': ls.entry_price,
