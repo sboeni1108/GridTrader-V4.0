@@ -966,16 +966,32 @@ class KIControllerThread(QThread):
                 market_context.pattern_confidence = pred_5min.confidence
 
         # 3. Alle Levels bewerten mit LevelScorer
+        if self.config.log_analysis_details:
+            self._log(
+                f"MarketContext: price={market_context.current_price:.2f}, "
+                f"atr_5={market_context.atr_5:.4f}, regime={market_context.volatility_regime}",
+                "DEBUG"
+            )
         level_scores = self._level_scorer.score_levels(available_levels, market_context)
 
         # Level-Scores an UI senden
         scores_for_ui = []
+
+        # Debug: Ersten Score loggen
+        if level_scores and self.config.log_analysis_details:
+            first_ls = level_scores[0]
+            self._log(
+                f"Score Debug: {first_ls.level_id[:8]} total={first_ls.total_score:.2f}, "
+                f"breakdowns={len(first_ls.breakdowns)}, rejection={first_ls.rejection_reason}",
+                "DEBUG"
+            )
+
         for ls in level_scores:
             # Status bestimmen basierend auf is_recommended
             status = 'AVAILABLE'
             if ls.is_recommended:
                 status = 'ACTIVE'
-            elif ls.total_score < 0.3:
+            elif ls.total_score < 30:  # Angepasst: Scores sind im Bereich -100 bis +100 pro Kategorie
                 status = 'EXCLUDED'
 
             # Score-Breakdown aus breakdowns Liste extrahieren
@@ -1020,9 +1036,14 @@ class KIControllerThread(QThread):
                 # Timeframe-Value direkt als Key (z.B. "5min", "15min")
                 predictions_for_ui[timeframe.value] = {
                     'direction': pred.direction.value,
-                    'price_target': pred.price_target,
+                    'expected_change_pct': pred.expected_change_pct,
                     'confidence': pred.confidence,
-                    'signals': {k: v for k, v in pred.signals.items()} if pred.signals else {},
+                    'signals': {
+                        'pattern': pred.pattern_signal,
+                        'volume': pred.volume_signal,
+                        'momentum': pred.momentum_signal,
+                        'time': pred.time_signal,
+                    },
                 }
                 # Zähle für Overall-Bias
                 if 'UP' in pred.direction.value:
