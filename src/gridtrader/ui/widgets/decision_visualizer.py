@@ -518,3 +518,36 @@ class DecisionVisualizerWidget(QWidget):
     def set_update_interval(self, ms: int):
         """Setzt Update-Intervall"""
         self._update_timer.setInterval(ms)
+
+    @Slot(dict)
+    def update_market_data(self, data: dict):
+        """
+        Aktualisiert die Marktdaten-Anzeige.
+
+        Args:
+            data: Dictionary mit Marktdaten (symbol, price, atr, volume_ratio, etc.)
+        """
+        symbol = data.get('symbol', '')
+        price = data.get('price', 0)
+        regime = data.get('volatility_regime', 'UNKNOWN')
+        atr = data.get('atr_5', 0)
+        volume_ratio = data.get('volume_ratio', 1.0)
+        pattern = data.get('pattern', 'UNKNOWN')
+        pattern_confidence = data.get('pattern_confidence', 0)
+
+        # Markt-Kontext aktualisieren (wenn vorhanden)
+        if hasattr(self, '_context_display') and self._context_display:
+            self._context_display.update_context({
+                'symbol': symbol,
+                'price': price,
+                'volatility_regime': regime,
+                'atr': atr,
+                'volume_ratio': volume_ratio,
+                'pattern': pattern,
+                'pattern_confidence': pattern_confidence,
+            })
+
+        # Preis in Prediction Display aktualisieren (wenn vorhanden)
+        if hasattr(self, '_prediction_display') and self._prediction_display:
+            # Aktualisiere Preis-Basis für Vorhersagen
+            pass  # Die Prediction wird vom Controller separat aktualisiert

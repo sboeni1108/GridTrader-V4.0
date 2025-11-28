@@ -714,14 +714,53 @@ class KIControllerWidget(QWidget):
         price = analysis.get('price', 0)
         regime = analysis.get('volatility_regime', 'UNKNOWN')
         atr = analysis.get('atr_5', 0)
+        volume_ratio = analysis.get('volume_ratio', 0)
+        trading_phase = analysis.get('trading_phase', 'UNKNOWN')
 
+        # Basis-Felder aktualisieren
         self._current_price_label.setText(f"${price:.2f}")
         self._atr_label.setText(f"{atr:.3f}%")
+
+        # Volumen-Label aktualisieren
+        if volume_ratio > 0:
+            self._volume_label.setText(f"{volume_ratio:.1f}x")
+            # Farbcodierung für Volumen
+            if volume_ratio >= 2.5:
+                self._volume_label.setStyleSheet("color: #f44336; font-weight: bold;")  # Rot für Spike
+            elif volume_ratio >= 1.5:
+                self._volume_label.setStyleSheet("color: #ff9800; font-weight: bold;")  # Orange für hoch
+            else:
+                self._volume_label.setStyleSheet("color: #4CAF50;")  # Grün für normal
+        else:
+            self._volume_label.setText("-")
+            self._volume_label.setStyleSheet("")
+
+        # Tageszeit-Regime Label aktualisieren
+        phase_names = {
+            'PRE_MARKET': 'Pre-Market',
+            'OPEN': 'Eröffnung',
+            'MORNING': 'Vormittag',
+            'MIDDAY': 'Mittag',
+            'AFTERNOON': 'Nachmittag',
+            'CLOSE': 'Schluss',
+            'AFTER_HOURS': 'After-Hours',
+            'CLOSED': 'Geschlossen',
+            'UNKNOWN': '-'
+        }
+        self._time_regime_label.setText(phase_names.get(trading_phase, trading_phase))
 
         # Volatilitäts-Card aktualisieren
         value_label = self._volatility_card.findChild(QLabel, "value")
         if value_label:
             value_label.setText(regime)
+
+        # Decision Visualizer aktualisieren (wenn vorhanden)
+        if self._decision_viz:
+            self._decision_viz.update_market_data(analysis)
+
+        # Statistics Widget aktualisieren (wenn vorhanden)
+        if self._statistics_widget:
+            self._statistics_widget.on_market_update(analysis)
 
     @Slot(str, str)
     def _on_volatility_changed(self, symbol: str, regime: str):
