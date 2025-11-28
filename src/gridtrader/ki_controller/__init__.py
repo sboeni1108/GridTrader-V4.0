@@ -13,7 +13,7 @@ Architektur:
 - Vollständig konfigurierbar mit Default-Werten
 """
 
-from .config import KIControllerConfig, ControllerMode, RiskLimits, VolatilityRegime
+from .config import KIControllerConfig, ControllerMode, RiskLimits, VolatilityRegime, HistoricalDataConfig
 from .state import KIControllerState, ControllerStatus, MarketState, ActiveLevelInfo
 from .controller_thread import KIControllerThread
 from .controller_api import ControllerAPI, TradingBotAPIAdapter
@@ -35,6 +35,7 @@ __all__ = [
     'ControllerMode',
     'RiskLimits',
     'VolatilityRegime',
+    'HistoricalDataConfig',
     # State
     'KIControllerState',
     'ControllerStatus',
