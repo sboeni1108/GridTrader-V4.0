@@ -293,6 +293,7 @@ src/gridtrader/
 | Phase 4 | ✅ Abgeschlossen | Risk & Execution - Limits, Watchdog |
 | Phase 5 | ✅ Abgeschlossen | Testing & Polish - Paper Trading, Stats |
 | Integration | ✅ Abgeschlossen | IBKR, Orphan Positions, Bugfixes |
+| Live-Daten | ✅ Abgeschlossen | Historische Daten, Level-Scores, Predictions |
 
 ### Phase 1 Ergebnisse
 
@@ -366,4 +367,53 @@ Später: Preis steigt auf $5.15 (+5 Cent Gewinn pro Aktie)
 
 ---
 
-*Letzte Aktualisierung: 2025-11-26*
+## Historische Daten Integration
+
+### Konfiguration
+Die historischen Daten werden über `HistoricalDataConfig` konfiguriert:
+
+| Parameter | Default | Beschreibung |
+|-----------|---------|-------------|
+| history_days | 30 | Anzahl Tage historischer Daten |
+| candle_size | "5min" | Kerzen-Größe (1min, 5min, 15min) |
+| auto_load_on_start | True | Automatisch beim Start laden |
+| min_candles_required | 100 | Mindest-Anzahl Kerzen für Analyse |
+| cache_ttl_minutes | 60 | Cache-Gültigkeit in Minuten |
+
+### Datenquellen
+- **IBKR**: Live-Marktdaten von Interactive Brokers
+- **BACKTEST**: Lokale/Test-Daten
+
+### UI-Konfiguration
+Im Config-Tab unter "Historische Daten":
+- Eingabefeld für history_days
+- Dropdown für candle_size
+- Checkbox für auto_load_on_start
+- Buttons: "Daten laden", "Cache leeren"
+- Status-Anzeige mit Datenquelle, Zeitraum und Kerzen-Anzahl
+
+---
+
+## Level-Bewertungen und Vorhersagen
+
+### Signal-Updates
+Der Controller sendet zwei neue Signals für die UI-Visualisierung:
+
+1. **level_scores_update** (list)
+   - Enthält alle Level-Bewertungen mit Score-Breakdown
+   - 8 Kategorien: price_proximity, volatility_fit, profit_potential, risk_reward, pattern_match, time_suitability, volume_context, trend_alignment
+   - Status: ACTIVE, AVAILABLE, EXCLUDED
+
+2. **predictions_update** (dict)
+   - Preis-Vorhersagen für 4 Zeiträume (5min, 15min, 30min, 1h)
+   - Jede Vorhersage enthält: direction, price_target, confidence
+   - Overall-Bias: STRONG_UP, UP, NEUTRAL, DOWN, STRONG_DOWN
+
+### Visualisierung
+- **LevelScoreTable**: Tabelle mit allen Level-Scores und Breakdown
+- **PredictionDisplay**: Richtungs-Anzeige mit Konfidenz-Balken
+- **ScoreBars**: Markt-Kontext Faktoren (Volatilität, Volumen, Tageszeit, Pattern, Risiko)
+
+---
+
+*Letzte Aktualisierung: 2025-11-28*

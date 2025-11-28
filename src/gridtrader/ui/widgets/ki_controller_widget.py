@@ -642,6 +642,8 @@ class KIControllerWidget(QWidget):
         self._controller.alert_created.connect(self._on_alert_created)
         self._controller.market_analysis_update.connect(self._on_analysis_update)
         self._controller.volatility_regime_changed.connect(self._on_volatility_changed)
+        self._controller.level_scores_update.connect(self._on_level_scores_update)
+        self._controller.predictions_update.connect(self._on_predictions_update)
         self._controller.soft_limit_warning.connect(self._on_soft_limit_warning)
         self._controller.hard_limit_reached.connect(self._on_hard_limit_reached)
 
@@ -903,6 +905,20 @@ class KIControllerWidget(QWidget):
             value_label.setStyleSheet(
                 f"font-size: 24px; font-weight: bold; color: {regime_colors.get(regime, '#333')};"
             )
+
+    @Slot(list)
+    def _on_level_scores_update(self, scores: list):
+        """Handler für Level-Score Updates"""
+        # An Decision Visualizer weiterleiten
+        if self._decision_viz:
+            self._decision_viz.update_level_scores(scores)
+
+    @Slot(dict)
+    def _on_predictions_update(self, predictions: dict):
+        """Handler für Preis-Vorhersage Updates"""
+        # An Decision Visualizer weiterleiten
+        if self._decision_viz:
+            self._decision_viz.update_predictions(predictions)
 
     @Slot(str, float)
     def _on_soft_limit_warning(self, limit_name: str, current_value: float):

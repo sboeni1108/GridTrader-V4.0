@@ -102,6 +102,8 @@ class KIControllerThread(QThread):
     market_analysis_update = Signal(dict)    # Aktuelle Markt-Analyse
     volatility_regime_changed = Signal(str, str)  # (symbol, regime)
     pattern_detected = Signal(dict)          # Muster erkannt
+    level_scores_update = Signal(list)       # Level-Bewertungen [{level_id, symbol, side, score, ...}]
+    predictions_update = Signal(dict)        # Preis-Vorhersagen {symbol: {5min, 15min, 30min, 1h}}
 
     # Risiko-Warnungen
     soft_limit_warning = Signal(str, float)  # (limit_name, current_value)
@@ -965,6 +967,70 @@ class KIControllerThread(QThread):
 
         # 3. Alle Levels bewerten mit LevelScorer
         level_scores = self._level_scorer.score_levels(available_levels, market_context)
+
+        # Level-Scores an UI senden
+        scores_for_ui = []
+        for ls in level_scores:
+            # Status bestimmen basierend auf is_recommended
+            status = 'AVAILABLE'
+            if ls.is_recommended:
+                status = 'ACTIVE'
+            elif ls.total_score < 0.3:
+                status = 'EXCLUDED'
+
+            scores_for_ui.append({
+                'level_id': ls.level_id,
+                'symbol': ls.symbol,
+                'side': ls.side,
+                'entry_price': ls.entry_price,
+                'exit_price': ls.exit_price,
+                'total_score': ls.total_score,
+                'is_recommended': ls.is_recommended,
+                'status': status,
+                # score_breakdown für LevelScoreTable Kompatibilität
+                'score_breakdown': {
+                    'price_proximity': ls.category_scores.get('price_proximity', 0),
+                    'volatility_fit': ls.category_scores.get('volatility_fit', 0),
+                    'profit_potential': ls.category_scores.get('profit_potential', 0),
+                    'risk_reward': ls.category_scores.get('risk_reward', 0),
+                    'pattern_match': ls.category_scores.get('pattern_match', 0),
+                    'time_suitability': ls.category_scores.get('time_suitability', 0),
+                    'volume_context': ls.category_scores.get('volume_context', 0),
+                    'trend_alignment': ls.category_scores.get('trend_alignment', 0),
+                }
+            })
+        if scores_for_ui:
+            self.level_scores_update.emit(scores_for_ui)
+
+        # Predictions an UI senden - Format für PredictionDisplay
+        predictions_for_ui = {}
+        overall_bias = 'NEUTRAL'
+        up_count = 0
+        down_count = 0
+
+        if prediction.predictions:
+            for timeframe, pred in prediction.predictions.items():
+                # Timeframe-Value direkt als Key (z.B. "5min", "15min")
+                predictions_for_ui[timeframe.value] = {
+                    'direction': pred.direction.value,
+                    'price_target': pred.price_target,
+                    'confidence': pred.confidence,
+                    'signals': {k: v for k, v in pred.signals.items()} if pred.signals else {},
+                }
+                # Zähle für Overall-Bias
+                if 'UP' in pred.direction.value:
+                    up_count += 1
+                elif 'DOWN' in pred.direction.value:
+                    down_count += 1
+
+            # Overall-Bias bestimmen
+            if up_count > down_count:
+                overall_bias = 'STRONG_UP' if up_count >= 3 else 'UP'
+            elif down_count > up_count:
+                overall_bias = 'STRONG_DOWN' if down_count >= 3 else 'DOWN'
+
+        predictions_for_ui['overall'] = {'bias': overall_bias}
+        self.predictions_update.emit(predictions_for_ui)
 
         # 4. LevelCandidates erstellen für Optimizer
         candidates = []
