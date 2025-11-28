@@ -1135,13 +1135,23 @@ class KIControllerThread(QThread):
                     optimal.append(level)
                     break
 
-        # Log immer, um Aktivierung zu verstehen
+        # Debug: Kandidaten-Verteilung
+        long_candidates = sum(1 for c in candidates if c.side == "LONG")
+        short_candidates = len(candidates) - long_candidates
         self._log(
-            f"Optimizer: {len(candidates)} Kandidaten → "
+            f"Optimizer: {len(candidates)} Kandidaten (L:{long_candidates}/S:{short_candidates}) → "
             f"{optimization_result.total_count} ausgewählt "
             f"(L:{optimization_result.long_count}/S:{optimization_result.short_count})",
             "INFO"
         )
+
+        # Debug: Zeige ersten Ablehnungsgrund wenn keine ausgewählt
+        if optimization_result.total_count == 0 and optimization_result.rejected_levels:
+            first_reject = optimization_result.rejected_levels[0]
+            self._log(
+                f"Erster Ablehnungsgrund: {first_reject[0].side} Level → {first_reject[1]}",
+                "WARNING"
+            )
 
         return optimal
 
