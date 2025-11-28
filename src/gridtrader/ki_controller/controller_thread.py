@@ -1281,6 +1281,11 @@ class KIControllerThread(QThread):
 
     def _execute_activate_level(self, level_data: dict, market_state: MarketState):
         """Führt Level-Aktivierung aus oder erstellt Alert"""
+        # WICHTIG: Aktuellen Marktpreis zu level_data hinzufügen
+        # Damit der API-Adapter nicht selbst den Preis abrufen muss
+        if market_state.current_price is not None and market_state.current_price > 0:
+            level_data['price'] = float(market_state.current_price)
+
         decision = DecisionRecord(
             timestamp=datetime.now(),
             decision_type="ACTIVATE_LEVEL",

@@ -508,6 +508,10 @@ class TradingBotAPIAdapter(ControllerAPI):
         Aktiviert ein Level im Trading-Bot.
 
         Verwendet den aktuellen Marktpreis als Basis.
+        Der Preis kann auf 3 Arten übergeben werden:
+        1. Als 'price' Key in level_data (bevorzugt - vom Controller)
+        2. Als base_price Parameter
+        3. Falls beides fehlt: Via get_market_data()
 
         Returns:
             Tuple[bool, str]: (Erfolg, Fehlermeldung oder Erfolgsmeldung)
@@ -517,15 +521,21 @@ class TradingBotAPIAdapter(ControllerAPI):
             shares = level_data.get('shares', 100)
             side = level_data.get('side', 'LONG')
 
-            # Basis-Preis ermitteln (aktueller Marktpreis)
-            if base_price is None:
+            # Basis-Preis ermitteln - Priorität:
+            # 1. Preis aus level_data (vom Controller mitgeliefert)
+            # 2. base_price Parameter
+            # 3. Fallback: Marktdaten abrufen
+            if 'price' in level_data and level_data['price']:
+                base_price = float(level_data['price'])
+            elif base_price is not None:
+                base_price = float(base_price)
+            else:
+                # Fallback: Marktdaten abrufen (kann fehlschlagen wenn nicht subscribed)
                 market_data = self.get_market_data(symbol)
                 if market_data and market_data.get('price'):
                     base_price = float(market_data['price'])
                 else:
                     return (False, f"Kein Marktpreis für {symbol} verfügbar")
-            else:
-                base_price = float(base_price)
 
             # Level-Daten im Format das _add_to_waiting_table erwartet
             level_for_bot = {
