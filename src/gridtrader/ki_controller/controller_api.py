@@ -110,7 +110,7 @@ class ControllerAPI(ABC):
     @abstractmethod
     def deactivate_level(self, level_id: str) -> bool:
         """
-        Deaktiviert ein Level
+        Deaktiviert ein Level (wartend oder aktiv)
 
         Args:
             level_id: ID des zu deaktivierenden Levels
@@ -347,6 +347,33 @@ class TradingBotAPIAdapter(ControllerAPI):
         """Setzt die IBKR Service Referenz manuell"""
         self._ibkr_service = service
 
+    # ==================== HELPER: Level-ID ====================
+
+    def _get_level_id(self, level: Dict[str, Any]) -> str:
+        """
+        Extrahiert oder rekonstruiert die Level-ID.
+
+        Priorität:
+        1. Gespeicherte 'ki_level_id' (vom Controller beim Aktivieren gesetzt)
+        2. Gespeicherte 'level_id'
+        3. Rekonstruktion aus scenario_name, level_num, side/type
+        """
+        # Priorität 1: Vom Controller gesetzte ID
+        if 'ki_level_id' in level and level['ki_level_id']:
+            return level['ki_level_id']
+
+        # Priorität 2: Gespeicherte level_id
+        if 'level_id' in level and level['level_id']:
+            return level['level_id']
+
+        # Priorität 3: Rekonstruktion (Fallback)
+        scenario_name = level.get('scenario_name', '')
+        level_num = level.get('level_num', 0)
+        # Trading-Bot verwendet 'type', Controller verwendet 'side'
+        side = level.get('side') or level.get('type', 'LONG')
+
+        return f"{scenario_name}_{level_num}_{side}"
+
     # ==================== MARKET DATA ====================
 
     def get_market_data(self, symbol: str) -> Optional[Dict[str, Any]]:
@@ -520,6 +547,7 @@ class TradingBotAPIAdapter(ControllerAPI):
             symbol = level_data.get('symbol', '')
             shares = level_data.get('shares', 100)
             side = level_data.get('side', 'LONG')
+            level_id = level_data.get('level_id', '')
 
             # Basis-Preis ermitteln - Priorität:
             # 1. Preis aus level_data (vom Controller mitgeliefert)
@@ -544,6 +572,7 @@ class TradingBotAPIAdapter(ControllerAPI):
                 'entry_pct': level_data.get('entry_pct', 0),
                 'exit_pct': level_data.get('exit_pct', 0),
                 'type': side,  # Trading-Bot verwendet 'type' statt 'side'
+                'ki_level_id': level_id,  # FIX: Level-ID speichern für spätere Deaktivierung!
             }
 
             # Config wie vom ActivationDialog erwartet
@@ -581,23 +610,69 @@ class TradingBotAPIAdapter(ControllerAPI):
             return (False, f"Exception: {e}")
 
     def deactivate_level(self, level_id: str) -> bool:
-        """Deaktiviert ein Level"""
+        """
+        Deaktiviert ein Level (wartend oder aktiv).
+
+        Sucht in beiden Listen: waiting_levels und active_levels.
+        Bei aktiven Levels mit Position wird die Position als Waise behalten.
+
+        Args:
+            level_id: ID des zu deaktivierenden Levels
+
+        Returns:
+            True wenn erfolgreich deaktiviert
+        """
         try:
-            # Level in waiting_levels suchen und entfernen
+            # 1. Suche in waiting_levels (noch nicht gefüllte Levels)
             if hasattr(self._bot, 'waiting_levels'):
                 for i, level in enumerate(self._bot.waiting_levels):
-                    # Level-ID rekonstruieren
-                    l_id = f"{level.get('scenario_name', '')}_{level.get('level_num', 0)}_{level.get('side', 'LONG')}"
+                    l_id = self._get_level_id(level)
                     if l_id == level_id:
+                        # Wenn eine Entry-Order läuft, canceln
+                        order_id = level.get('broker_order_id')
+                        if order_id and self._ibkr_service and self._ibkr_service.is_connected():
+                            self._ibkr_service.cancel_order(order_id)
+                            print(f"Entry-Order {order_id} für Level {level_id} gecancelt")
+
+                        # Level aus waiting_levels entfernen
                         self._bot.waiting_levels.pop(i)
                         if hasattr(self._bot, '_update_waiting_table'):
                             self._bot._update_waiting_table()
+                        print(f"Wartendes Level {level_id} deaktiviert")
                         return True
 
+            # 2. Suche in active_levels (Levels mit offener Position)
+            if hasattr(self._bot, 'active_levels'):
+                for i, level in enumerate(self._bot.active_levels):
+                    l_id = self._get_level_id(level)
+                    if l_id == level_id:
+                        # Prüfe ob Position existiert
+                        filled_shares = level.get('filled_shares', 0) or level.get('shares', 0)
+
+                        if filled_shares > 0:
+                            # Position vorhanden → zu Waisen-Position konvertieren
+                            return self.deactivate_level_keep_position(level_id, "KI-Controller Entscheidung")
+                        else:
+                            # Keine Position → einfach entfernen
+                            # Exit-Order canceln falls vorhanden
+                            exit_order_id = level.get('exit_order_id')
+                            if exit_order_id and self._ibkr_service and self._ibkr_service.is_connected():
+                                self._ibkr_service.cancel_order(exit_order_id)
+                                print(f"Exit-Order {exit_order_id} für Level {level_id} gecancelt")
+
+                            self._bot.active_levels.pop(i)
+                            if hasattr(self._bot, '_update_active_table'):
+                                self._bot._update_active_table()
+                            print(f"Aktives Level {level_id} deaktiviert (keine Position)")
+                            return True
+
+            print(f"Level {level_id} nicht gefunden in waiting_levels oder active_levels")
             return False
 
         except Exception as e:
             print(f"Fehler bei Level-Deaktivierung: {e}")
+            import traceback
+            traceback.print_exc()
             return False
 
     def get_active_levels(self) -> List[Dict[str, Any]]:
@@ -628,7 +703,7 @@ class TradingBotAPIAdapter(ControllerAPI):
             # Level in waiting_levels suchen
             if hasattr(self._bot, 'waiting_levels'):
                 for i, level in enumerate(self._bot.waiting_levels):
-                    l_id = f"{level.get('scenario_name', '')}_{level.get('level_num', 0)}_{level.get('side', 'LONG')}"
+                    l_id = self._get_level_id(level)
                     if l_id == level_id:
                         # Wenn eine Order-ID existiert, canceln
                         order_id = level.get('broker_order_id')
@@ -645,7 +720,7 @@ class TradingBotAPIAdapter(ControllerAPI):
             # Level in active_levels suchen
             if hasattr(self._bot, 'active_levels'):
                 for i, level in enumerate(self._bot.active_levels):
-                    l_id = f"{level.get('scenario_name', '')}_{level.get('level_num', 0)}_{level.get('side', 'LONG')}"
+                    l_id = self._get_level_id(level)
                     if l_id == level_id:
                         # Exit-Order canceln falls vorhanden
                         exit_order_id = level.get('exit_order_id')
@@ -735,7 +810,7 @@ class TradingBotAPIAdapter(ControllerAPI):
                         'quantity': 0,
                         'avg_price': 0,
                         'unrealized_pnl': 0,
-                        'side': level.get('side', 'LONG'),
+                        'side': level.get('side') or level.get('type', 'LONG'),
                     }
                 positions[symbol]['quantity'] += level.get('filled_shares', 0)
 
@@ -885,7 +960,43 @@ class TradingBotAPIAdapter(ControllerAPI):
         """
         if hasattr(self._bot, 'deactivate_level_keep_position'):
             return self._bot.deactivate_level_keep_position(level_id, reason)
-        return False
+
+        # Fallback: Manuell zu Waise konvertieren
+        try:
+            if hasattr(self._bot, 'active_levels'):
+                for i, level in enumerate(self._bot.active_levels):
+                    l_id = self._get_level_id(level)
+                    if l_id == level_id:
+                        # Exit-Order canceln
+                        exit_order_id = level.get('exit_order_id')
+                        if exit_order_id and self._ibkr_service and self._ibkr_service.is_connected():
+                            self._ibkr_service.cancel_order(exit_order_id)
+
+                        # Level aus active_levels entfernen
+                        removed_level = self._bot.active_levels.pop(i)
+
+                        # Zu orphan_positions hinzufügen (falls das Feature existiert)
+                        if hasattr(self._bot, 'orphan_positions'):
+                            orphan = {
+                                'id': level_id,
+                                'symbol': removed_level.get('symbol', ''),
+                                'side': removed_level.get('side') or removed_level.get('type', 'LONG'),
+                                'shares': removed_level.get('filled_shares', 0),
+                                'entry_price': removed_level.get('entry_fill_price', 0),
+                                'reason': reason,
+                                'min_profit_cents': 3,  # Default
+                            }
+                            self._bot.orphan_positions.append(orphan)
+
+                        if hasattr(self._bot, '_update_active_table'):
+                            self._bot._update_active_table()
+
+                        print(f"Level {level_id} deaktiviert, Position als Waise behalten")
+                        return True
+            return False
+        except Exception as e:
+            print(f"Fehler bei deactivate_level_keep_position: {e}")
+            return False
 
     def should_close_orphan(self, orphan: Dict[str, Any]) -> bool:
         """

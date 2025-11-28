@@ -18,12 +18,16 @@
 - ✅ Optimizer-Bugfixes (price_zone, Diversifikation)
 - ✅ Signal-Verbindungen für Level-Aktivierung
 - ✅ Marktpreis bei Aktivierung wird übergeben
+- ✅ **Level-Deaktivierung funktioniert** (wartende UND aktive Levels)
+- ✅ **Level-ID wird beim Aktivieren gespeichert** (ki_level_id)
 
 ### Bereit für Live-Test
 Der KI-Controller sollte jetzt vollständig funktionieren:
 1. Optimizer wählt Levels basierend auf Scores
 2. Levels werden im Trading-Bot aktiviert
 3. Marktpreis wird korrekt übergeben
+4. Nicht-optimale Levels werden automatisch deaktiviert
+5. Aktive Levels mit Position → Waisen-Position
 
 ---
 
@@ -298,6 +302,26 @@ Er wird automatisch durch den IBKR Account-Typ bestimmt (Paper Account vs Live A
 ---
 
 ## Changelog
+
+### 2025-11-28 (Level-Deaktivierung Fix)
+
+- **Level-ID Konsistenz**
+  - Problem: Level-ID wurde beim Deaktivieren rekonstruiert statt gespeichert
+  - Fix: `ki_level_id` wird beim Aktivieren im Level gespeichert
+  - Neue Helper-Methode: `_get_level_id()` mit Priorität:
+    1. `ki_level_id` (vom Controller gesetzt)
+    2. `level_id` (gespeichert)
+    3. Rekonstruktion aus scenario_name, level_num, side/type (Fallback)
+
+- **Wartende UND Aktive Levels deaktivieren**
+  - Problem: `deactivate_level()` durchsuchte nur `waiting_levels`
+  - Fix: Durchsucht jetzt BEIDE Listen:
+    - `waiting_levels`: Einfach entfernen + Entry-Order canceln
+    - `active_levels`: Position prüfen → Waisen-Position erstellen
+
+- **Side/Type Mapping korrigiert**
+  - Trading-Bot verwendet `'type'`, Controller verwendet `'side'`
+  - `_get_level_id()` berücksichtigt beide Keys
 
 ### 2025-11-28 (Trading-Bot Integration - Session 2)
 
