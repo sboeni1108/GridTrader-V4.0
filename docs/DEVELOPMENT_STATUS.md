@@ -7,9 +7,9 @@
 
 ## Aktueller Stand
 
-**Datum:** 2025-11-26
+**Datum:** 2025-11-28
 **Aktives Feature:** KI-Trading-Controller
-**Aktuelle Phase:** Phase 5 abgeschlossen - Alle Phasen komplett!
+**Aktuelle Phase:** Live-Integration & UI-Verbesserungen
 
 ---
 
@@ -285,6 +285,42 @@ Er wird automatisch durch den IBKR Account-Typ bestimmt (Paper Account vs Live A
 
 ## Changelog
 
+### 2025-11-28 (Live-Daten Integration & UI-Verbesserungen)
+- **Historische Daten Config-Tab**
+  - Neuer UI-Abschnitt im Config-Tab für historische Daten Einstellungen
+  - Konfigurierbar: history_days (Default 30), candle_size (5min), auto_load_on_start
+  - Buttons: "Daten laden", "Cache leeren"
+  - Echtzeit-Statusanzeige mit Datenquelle (IBKR/BACKTEST)
+  - HistoricalDataConfig Klasse in config.py hinzugefügt
+
+- **IBKR Timezone-Fix**
+  - Behoben: "Invalid comparison between dtype=datetime64[ns, US/Eastern] and datetime"
+  - IBKR-Daten werden jetzt timezone-naive gespeichert
+  - Konsistente Datetime-Handhabung in historical_data_manager.py
+
+- **Datenquellen-Label**
+  - BACKTEST vs IBKR Label korrekt gesetzt
+  - register_backtest_data() akzeptiert jetzt source_hint Parameter
+  - get_extended_history() übergibt "IBKR" als Quelle
+
+- **Dashboard Vollständigkeit**
+  - Volumen-Anzeige im Dashboard (farbkodiert)
+  - Tageszeit-Regime Anzeige im Dashboard
+  - Controller-Empfehlung mit intelligenten Hinweisen
+  - _generate_recommendation() Methode für Empfehlungstexte
+
+- **Level-Bewertungen Visualisierung**
+  - Neues Signal: level_scores_update (controller_thread.py)
+  - LevelScoreTable zeigt jetzt alle 8 Score-Kategorien
+  - Korrekte Datenformat-Konvertierung (score_breakdown statt category_scores)
+  - Status-Feld hinzugefügt (ACTIVE, AVAILABLE, EXCLUDED)
+
+- **Preis-Vorhersage Visualisierung**
+  - Neues Signal: predictions_update (controller_thread.py)
+  - PredictionDisplay zeigt 5min, 15min, 30min, 1h Vorhersagen
+  - Overall-Bias Berechnung (STRONG_UP, UP, NEUTRAL, DOWN, STRONG_DOWN)
+  - Farbkodierte Richtungsanzeige mit Konfidenz-Balken
+
 ### 2025-11-26 (Bug Fixes & Integration)
 - **IBKR Integration Fixes**
   - Order-Ausführung Checkbox funktioniert jetzt korrekt bei IBKR-Verbindung
@@ -365,4 +401,4 @@ Er wird automatisch durch den IBKR Account-Typ bestimmt (Paper Account vs Live A
 
 ---
 
-*Letzte Aktualisierung: 2025-11-26*
+*Letzte Aktualisierung: 2025-11-28*

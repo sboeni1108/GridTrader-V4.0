@@ -124,18 +124,21 @@ class HistoricalDataManager:
         self,
         symbol: str,
         data: pd.DataFrame,
-        timeframe: str = "1min"
+        timeframe: str = "1min",
+        source_hint: str = "BACKTEST"
     ) -> bool:
         """
-        Registriert Daten vom Backtesting-Widget.
+        Registriert Daten vom Backtesting-Widget oder IBKR.
 
         Diese Methode wird vom Backtesting-Widget aufgerufen,
-        wenn neue Daten heruntergeladen wurden.
+        wenn neue Daten heruntergeladen wurden, oder vom
+        HistoricalDataManager selbst beim IBKR-Load.
 
         Args:
             symbol: Aktien-Symbol
             data: DataFrame mit OHLCV-Daten
             timeframe: Timeframe der Daten
+            source_hint: Datenquelle ("BACKTEST", "IBKR", etc.)
 
         Returns:
             True wenn erfolgreich registriert
@@ -155,7 +158,7 @@ class HistoricalDataManager:
                 source = "MERGED"
             else:
                 merged_data = data
-                source = "BACKTEST"
+                source = source_hint
 
             # Index zu datetime konvertieren wenn nötig
             if not isinstance(merged_data.index, pd.DatetimeIndex):
@@ -340,8 +343,8 @@ class HistoricalDataManager:
         extended_data = self._load_from_ibkr(symbol, days, timeframe)
 
         if extended_data is not None and not extended_data.empty:
-            # Mit bestehendem Cache mergen
-            self.register_backtest_data(symbol, extended_data, timeframe)
+            # Mit bestehendem Cache mergen (Source = IBKR)
+            self.register_backtest_data(symbol, extended_data, timeframe, source_hint="IBKR")
             return self.get_data(symbol, timeframe, days=days)
 
         # Fallback: Bestehende Daten zurückgeben
