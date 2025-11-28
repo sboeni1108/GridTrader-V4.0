@@ -9,7 +9,21 @@
 
 **Datum:** 2025-11-28
 **Aktives Feature:** KI-Trading-Controller
-**Aktuelle Phase:** Live-Integration & UI-Verbesserungen
+**Aktuelle Phase:** Trading-Bot Integration (Abgeschlossen)
+
+### Aktueller Fortschritt
+- ✅ Alle 5 Phasen implementiert
+- ✅ Live-Daten Integration
+- ✅ UI-Verbesserungen (Level-Scores, Predictions)
+- ✅ Optimizer-Bugfixes (price_zone, Diversifikation)
+- ✅ Signal-Verbindungen für Level-Aktivierung
+- ✅ Marktpreis bei Aktivierung wird übergeben
+
+### Bereit für Live-Test
+Der KI-Controller sollte jetzt vollständig funktionieren:
+1. Optimizer wählt Levels basierend auf Scores
+2. Levels werden im Trading-Bot aktiviert
+3. Marktpreis wird korrekt übergeben
 
 ---
 
@@ -284,6 +298,44 @@ Er wird automatisch durch den IBKR Account-Typ bestimmt (Paper Account vs Live A
 ---
 
 ## Changelog
+
+### 2025-11-28 (Trading-Bot Integration - Session 2)
+
+- **Optimizer Bugfixes**
+  - `price_zone` Berechnung war fehlerhaft: `int(entry_price // (entry_price * 0.01))` = immer 100
+  - Fix: `int(entry_price)` für $1-Preiszonen
+  - Diversifikations-Check lehnte erstes Level ab (100% > 30%)
+  - Fix: Diversifikation erst ab 4 Levels prüfen (`min_levels_for_diversification`)
+
+- **Level-Aktivierung im Trading-Bot**
+  - Signal `request_activate_level` war nicht verbunden
+  - Neue Signal-Connections in `ki_controller_widget.py`:
+    - `request_activate_level` → `_on_request_activate_level`
+    - `request_deactivate_level` → `_on_request_deactivate_level`
+    - `request_stop_trade` → `_on_request_stop_trade`
+    - `request_emergency_stop` → `_on_request_emergency_stop`
+  - Handler-Methoden implementiert für jedes Signal
+
+- **API-Adapter Korrektur**
+  - War: Direktes Anhängen an `waiting_levels` mit falschem Format
+  - Jetzt: Aufruf von `_add_to_waiting_table()` mit korrektem `level` und `config` Dict
+  - Trading-Bot verwendet `'type'` statt `'side'`
+
+- **Level-Namen Verbesserung**
+  - Statt "L1_LONG" jetzt vollständiger Szenario-Name
+  - Format: `{scenario_name} L{level_num}` (z.B. "WULF_5_3 L2")
+  - Änderungen in `decision_visualizer.py` und `controller_thread.py`
+
+- **Bessere Fehlerbehandlung**
+  - `activate_level()` gibt jetzt `Tuple[bool, str]` zurück
+  - Fehlermeldung wird im Log angezeigt
+  - Log-Limit erhöht: 2000 → 5000 Zeilen, Löschung 500 → 200 Zeilen
+
+- **Marktpreis-Fix** ✅
+  - Problem: "Kein Marktpreis für {symbol} verfügbar"
+  - Ursache: API-Adapter rief `get_market_data()` auf, aber Marktdaten nicht abonniert
+  - Fix 1: `controller_thread.py` fügt `level_data['price']` mit aktuellem Preis hinzu
+  - Fix 2: `controller_api.py` verwendet Preis aus `level_data` als erste Priorität
 
 ### 2025-11-28 (Live-Daten Integration & UI-Verbesserungen)
 - **Historische Daten Config-Tab**

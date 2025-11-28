@@ -294,6 +294,20 @@ src/gridtrader/
 | Phase 5 | ✅ Abgeschlossen | Testing & Polish - Paper Trading, Stats |
 | Integration | ✅ Abgeschlossen | IBKR, Orphan Positions, Bugfixes |
 | Live-Daten | ✅ Abgeschlossen | Historische Daten, Level-Scores, Predictions |
+| Bot-Integration | ✅ Abgeschlossen | Level-Aktivierung, Marktpreis-Übergabe |
+
+### Aktueller Stand (2025-11-28)
+
+**Funktioniert:**
+- Optimizer wählt 3-5 Levels aus 30 Kandidaten
+- Signal-Verbindungen für Level-Aktivierung
+- API-Adapter ruft `_add_to_waiting_table()` korrekt auf
+- Level-Namen zeigen vollständige Szenario-Namen
+
+**Fertig:**
+- ✅ Marktpreis wird jetzt vom Controller an API-Adapter übergeben
+- `controller_thread.py`: Fügt `level_data['price']` hinzu
+- `controller_api.py`: Verwendet Preis aus `level_data` als erste Priorität
 
 ### Phase 1 Ergebnisse
 
@@ -413,6 +427,52 @@ Der Controller sendet zwei neue Signals für die UI-Visualisierung:
 - **LevelScoreTable**: Tabelle mit allen Level-Scores und Breakdown
 - **PredictionDisplay**: Richtungs-Anzeige mit Konfidenz-Balken
 - **ScoreBars**: Markt-Kontext Faktoren (Volatilität, Volumen, Tageszeit, Pattern, Risiko)
+
+---
+
+---
+
+## Bekannte Bugfixes (2025-11-28)
+
+### Optimizer price_zone Bug
+```python
+# VORHER (falsch): Gab immer 100 zurück
+return int(entry_price // (entry_price * 0.01))
+
+# NACHHER (korrekt): $1-Preiszonen
+return int(entry_price)
+```
+
+### Optimizer Diversifikation Bug
+```python
+# VORHER: Erstes Level wurde abgelehnt (100% > 30%)
+zone_ratio = (zone_count + 1) / total_count * 100
+if zone_ratio > max_exposure_per_price_zone_pct:
+    return "Zu viel in Preiszone..."
+
+# NACHHER: Erst ab 4 Levels prüfen
+min_levels = int(100 / max_exposure_per_price_zone_pct)  # = 4
+if len(selected_levels) >= min_levels:
+    # Dann erst Diversifikation prüfen
+```
+
+### Signal-Verbindungen fehlten
+```python
+# In ki_controller_widget.py hinzugefügt:
+self._controller.request_activate_level.connect(self._on_request_activate_level)
+self._controller.request_deactivate_level.connect(self._on_request_deactivate_level)
+self._controller.request_stop_trade.connect(self._on_request_stop_trade)
+self._controller.request_emergency_stop.connect(self._on_request_emergency_stop)
+```
+
+### API-Adapter falsche Methode
+```python
+# VORHER (falsch): Direkt an waiting_levels anhängen
+self._bot.waiting_levels.append(level_for_bot)
+
+# NACHHER (korrekt): _add_to_waiting_table verwenden
+self._bot._add_to_waiting_table(level_for_bot, config, base_price)
+```
 
 ---
 
