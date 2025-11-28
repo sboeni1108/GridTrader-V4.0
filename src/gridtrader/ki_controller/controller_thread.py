@@ -1020,9 +1020,14 @@ class KIControllerThread(QThread):
                 # Timeframe-Value direkt als Key (z.B. "5min", "15min")
                 predictions_for_ui[timeframe.value] = {
                     'direction': pred.direction.value,
-                    'price_target': pred.price_target,
+                    'expected_change_pct': pred.expected_change_pct,
                     'confidence': pred.confidence,
-                    'signals': {k: v for k, v in pred.signals.items()} if pred.signals else {},
+                    'signals': {
+                        'pattern': pred.pattern_signal,
+                        'volume': pred.volume_signal,
+                        'momentum': pred.momentum_signal,
+                        'time': pred.time_signal,
+                    },
                 }
                 # Zähle für Overall-Bias
                 if 'UP' in pred.direction.value:
