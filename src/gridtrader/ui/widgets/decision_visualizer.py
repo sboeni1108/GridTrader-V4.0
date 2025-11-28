@@ -277,14 +277,22 @@ class LevelScoreTable(QTableWidget):
         self.setRowCount(len(levels))
 
         for row, level in enumerate(levels):
-            # Level ID - zeige mehr Infos (Format: scenario_levelnum_side)
-            level_id = level.get('level_id', '')
-            # Extrahiere level_num und side aus der ID wenn möglich
-            parts = level_id.split('_')
-            if len(parts) >= 3:
-                display_id = f"L{parts[-2]}_{parts[-1]}"  # z.B. "L1_LONG"
+            # Level ID - zeige Scenario-Name mit Level-Nummer
+            scenario_name = level.get('scenario_name', '')
+            level_num = level.get('level_num', 0)
+            side = level.get('side', '')
+
+            if scenario_name:
+                # Vollständiger Name: "Scenario L1 LONG"
+                display_id = f"{scenario_name} L{level_num}"
             else:
-                display_id = level_id[:12]
+                # Fallback: Aus level_id extrahieren
+                level_id = level.get('level_id', '')
+                parts = level_id.split('_')
+                if len(parts) >= 3:
+                    display_id = f"L{parts[-2]}_{parts[-1]}"
+                else:
+                    display_id = level_id[:15]
             self.setItem(row, 0, QTableWidgetItem(display_id))
 
             # Symbol
