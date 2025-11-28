@@ -6,7 +6,7 @@ Definiert alle Operationen, die der Controller am Trading-Bot ausführen kann.
 """
 
 from abc import ABC, abstractmethod
-from typing import Optional, Dict, List, Any, Callable
+from typing import Optional, Dict, List, Any, Callable, Tuple
 from decimal import Decimal
 
 # IBKR Service Import
@@ -503,11 +503,14 @@ class TradingBotAPIAdapter(ControllerAPI):
         self,
         level_data: Dict[str, Any],
         base_price: Optional[Decimal] = None
-    ) -> bool:
+    ) -> Tuple[bool, str]:
         """
         Aktiviert ein Level im Trading-Bot.
 
         Verwendet den aktuellen Marktpreis als Basis.
+
+        Returns:
+            Tuple[bool, str]: (Erfolg, Fehlermeldung oder Erfolgsmeldung)
         """
         try:
             symbol = level_data.get('symbol', '')
@@ -520,8 +523,7 @@ class TradingBotAPIAdapter(ControllerAPI):
                 if market_data and market_data.get('price'):
                     base_price = float(market_data['price'])
                 else:
-                    print(f"Kein Marktpreis für {symbol} verfügbar")
-                    return False
+                    return (False, f"Kein Marktpreis für {symbol} verfügbar")
             else:
                 base_price = float(base_price)
 
@@ -542,6 +544,10 @@ class TradingBotAPIAdapter(ControllerAPI):
                 'fixed_price': base_price,
             }
 
+            # Debug: Bot-Status prüfen
+            if self._bot is None:
+                return (False, "Trading-Bot ist None!")
+
             # Verwende die Trading-Bot Methode wenn verfügbar
             if hasattr(self._bot, '_add_to_waiting_table'):
                 self._bot._add_to_waiting_table(level_for_bot, config, base_price)
@@ -555,18 +561,14 @@ class TradingBotAPIAdapter(ControllerAPI):
                 if hasattr(self._bot, '_sort_waiting_table'):
                     self._bot._sort_waiting_table()
 
-                print(f"Level aktiviert: {level_for_bot['scenario_name']} L{level_for_bot['level_num']} {side}")
-                return True
+                return (True, f"{level_for_bot['scenario_name']} L{level_for_bot['level_num']} {side}")
             else:
-                print("Trading-Bot hat keine _add_to_waiting_table Methode")
-                return False
+                return (False, f"Trading-Bot ({type(self._bot).__name__}) hat keine _add_to_waiting_table Methode")
 
         except Exception as e:
-            print(f"Fehler bei Level-Aktivierung: {e}")
             import traceback
             traceback.print_exc()
-
-        return False
+            return (False, f"Exception: {e}")
 
     def deactivate_level(self, level_id: str) -> bool:
         """Deaktiviert ein Level"""
